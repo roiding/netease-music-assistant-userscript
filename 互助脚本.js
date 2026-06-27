@@ -3,14 +3,14 @@
 // @namespace    http://tampermonkey.net/
 // @version      3.0.0
 // @description  V3.0.0：使用自建 Cloudflare Worker + D1，Linux.do 仅用于首次身份绑定，互助次数可离线结算。
-// @author       YourName
+// @author       roiding
 // @match        *://music.163.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @grant        unsafeWindow
-// @connect      *
+// @connect      netease.ran-ding.gq
 // ==/UserScript==
 
 (function() {
@@ -68,6 +68,19 @@
     function formatTime(ms) { if (isNaN(ms) || ms <= 0) return "00:00"; const s = Math.floor(ms / 1000); return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }
     function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+    async function fetchAlbumSongIds(albumId) {
+        try {
+            const res = await fetch(`/api/v1/album/${albumId}`, { credentials: 'include' });
+            const data = safeJSON(await res.text());
+            const songs = Array.isArray(data && data.songs) ? data.songs : [];
+            return songs
+                .map(song => String(song && song.id ? song.id : '').trim())
+                .filter(id => /^\d+$/.test(id));
+        } catch (e) {
+            return [];
+        }
+    }
+
     function extractSongId(value) {
         const text = String(value || '');
         const match = text.match(/(?:song\?id=|\/song\?id=|id=)(\d+)/);
@@ -101,6 +114,11 @@
     }
 
     async function resolveAlbumSongId(albumId) {
+        const apiSongIds = await fetchAlbumSongIds(albumId);
+        if (apiSongIds.length > 0) {
+            return apiSongIds[Math.floor(Math.random() * apiSongIds.length)];
+        }
+
         window.location.hash = `#/album?id=${albumId}`;
         const deadline = Date.now() + 15000;
         while (Date.now() < deadline) {
