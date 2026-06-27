@@ -4,6 +4,10 @@
 // @version      3.1.0
 // @description  V3.1.0：使用自建 Cloudflare Worker + D1，Linux.do 仅用于首次身份绑定，互助次数可离线结算。
 // @author       roiding
+// @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
+// @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
+// @downloadURL  https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/互助脚本.js
+// @updateURL    https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/互助脚本.js
 // @match        *://music.163.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
