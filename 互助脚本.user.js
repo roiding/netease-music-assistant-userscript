@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.3.2
-// @description  V3.3.2：去掉用户端在线人数展示，并让 /next 不再返回在线人数，减少高频无效查询。
+// @version      3.3.3
+// @description  V3.3.3：检测到普通新版本时也显示可点击的更新按钮，和强制升级按钮分开处理。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.3.2';
+    const CURRENT_VERSION = '3.3.3';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
@@ -264,6 +264,13 @@
     function getUpdateUrl() {
         return (authConfig && authConfig.updateUrl) || UPDATE_FALLBACK_URL;
     }
+
+    function showUpdateButton(label = '更新脚本') {
+        const updateButton = document.getElementById('update-script-btn');
+        if (!updateButton) return;
+        updateButton.innerText = label;
+        updateButton.style.display = 'block';
+    }
     function getErrorText(code) {
         if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
         if (code === 'registration_required') return '当前账号尚未完成注册，请先完成开通流程。';
@@ -318,7 +325,10 @@
         if (authSection) authSection.style.display = 'block';
         if (helperForm) helperForm.style.display = 'none';
         if (loginButton) loginButton.style.display = 'none';
-        if (updateButton) updateButton.style.display = 'block';
+        if (updateButton) {
+            updateButton.innerText = '立即更新脚本';
+            updateButton.style.display = 'block';
+        }
     }
 
     async function fetchSongDuration(songId) {
@@ -511,10 +521,11 @@
             headers:{'X-Music-Helper-Version': CURRENT_VERSION},
             onload:res=>{
                 const d = safeJSON(res.responseText);
-                if(d && d.latestVersion && d.latestVersion !== CURRENT_VERSION) {
+                if(d && d.latestVersion && compareVersions(d.latestVersion, CURRENT_VERSION) > 0) {
                     const up = document.createElement('div');
                     up.innerHTML = `<div style="background:#fffbe6; border:1px solid #ffe58f; padding:8px; border-radius:4px; margin-bottom:8px; font-size:11px; color:#856404;">发现新版本 v${d.latestVersion}</div>`;
                     document.getElementById('helper-body').prepend(up);
+                    showUpdateButton(`更新到 v${d.latestVersion}`);
                 }
                 authConfig = d;
                 if (d && d.minSupportedVersion && compareVersions(CURRENT_VERSION, d.minSupportedVersion) < 0) {
