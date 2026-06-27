@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.3.1
-// @description  V3.3.1：收口为单文件 userscript，普通 js 仅保留为老用户升级过渡镜像。
+// @version      3.3.2
+// @description  V3.3.2：去掉用户端在线人数展示，并让 /next 不再返回在线人数，减少高频无效查询。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.3.1';
+    const CURRENT_VERSION = '3.3.2';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
@@ -456,7 +456,6 @@
                     </div>
                     <div id="helper-info" style="display:none; white-space:pre-line; font-size:11px; margin-top:8px; padding:8px; border-radius:4px; background:#f0f7ff; border:1px solid #adc6ff; color:#1890ff; line-height:1.5;">就绪...</div>
                     <button id="manual-btn" style="display:none; width:100%; margin-top:8px; background:#d33; color:#fff; border:none; padding:8px; border-radius:4px; cursor:pointer; animation: blink 1s infinite;">点我激活播放</button>
-                    <div id="online-count" style="font-size:10px; color:#999; margin-top:8px; text-align:right;">在线人数: 0</div>
                 </div>
             </div>
         `;
@@ -679,7 +678,6 @@
         const infoEl = document.getElementById('helper-info');
         const data = await callAPI('GET', '/next');
         if(!data) { infoEl.innerText = '服务器连接失败'; return; }
-        document.getElementById('online-count').innerText = `在线人数: ${data.count || 0}`;
         if (data.participant) updateParticipantInfo(data.participant);
 
         if (data.musicId) {
