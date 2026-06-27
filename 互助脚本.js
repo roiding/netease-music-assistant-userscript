@@ -17,9 +17,7 @@
     'use strict';
     if (window.self !== window.top) return;
 
-    // 部署 Worker 后，把这里改成自己的 Worker API 地址，例如：
-    // https://netease-music-helper.your-name.workers.dev/api
-    const API_BASE = 'https://netease-music-helper.example.workers.dev/api';
+    const API_BASE = 'https://netease.ran-ding.gq/api';
     const CURRENT_VERSION = '3.0.0';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
