@@ -21,6 +21,7 @@
     const CURRENT_VERSION = '3.0.0';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
+    const ERROR_KEY = 'musicHelperLastError';
 
     let isHelperRunning = false;
     let monitorTimer = null;
@@ -67,6 +68,33 @@
 
     function formatTime(ms) { if (isNaN(ms) || ms <= 0) return "00:00"; const s = Math.floor(ms / 1000); return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }
     function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+    function getErrorText(code) {
+        if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
+        if (code === 'registration_required') return '当前账号尚未完成注册，请先完成开通流程。';
+        if (code === 'invalid_or_expired_token') return '登录态已失效，请重新登录。';
+        return code ? `发生错误：${code}` : '';
+    }
+
+    function handleAccessError(code) {
+        const text = getErrorText(code);
+        stopHelper();
+        GM_setValue(TOKEN_KEY, '');
+        GM_setValue(LEGACY_TOKEN_KEY, '');
+        GM_setValue(ERROR_KEY, code || 'unknown');
+        const loginStatus = document.getElementById('login-status');
+        const helperInfo = document.getElementById('helper-info');
+        const authSection = document.getElementById('auth-section');
+        const helperForm = document.getElementById('helper-form');
+        const logoutLink = document.getElementById('logout-link');
+        if (loginStatus) loginStatus.innerText = text || '访问受限';
+        if (helperInfo) {
+            helperInfo.style.display = 'block';
+            helperInfo.innerText = text || '访问受限';
+        }
+        if (authSection) authSection.style.display = 'block';
+        if (helperForm) helperForm.style.display = 'none';
+        if (logoutLink) logoutLink.style.display = 'none';
+    }
 
     async function fetchAlbumSongIds(albumId) {
         try {
@@ -205,6 +233,10 @@
 
         fetchConfig();
         if (token) refreshMe();
+        const lastError = GM_getValue(ERROR_KEY, '');
+        if (lastError) {
+            handleAccessError(lastError);
+        }
     }
 
     async function fetchConfig() {
@@ -231,13 +263,21 @@
             method, url:`${API_BASE}${path}`, headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
             data: body?JSON.stringify(body):null,
             onload: res=>{
+                const payload = safeJSON(res.responseText);
                 if(res.status===401){
                     GM_setValue(TOKEN_KEY,'');
                     GM_setValue(LEGACY_TOKEN_KEY,'');
+                    GM_setValue(ERROR_KEY, payload && payload.error ? payload.error : 'invalid_or_expired_token');
                     location.reload();
                     return;
                 }
-                r(safeJSON(res.responseText));
+                if(res.status===403){
+                    handleAccessError(payload && payload.error ? payload.error : 'forbidden');
+                    r(payload);
+                    return;
+                }
+                GM_setValue(ERROR_KEY, '');
+                r(payload);
             },
             onerror:()=>r(null),
             ontimeout:()=>r(null)
@@ -426,6 +466,7 @@
             await claimTicket(ticket);
             cleanLoginParams();
         } else if (loginError) {
+            GM_setValue(ERROR_KEY, loginError);
             cleanLoginParams();
         }
         initUI();
