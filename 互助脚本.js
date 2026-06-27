@@ -2,7 +2,7 @@
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
 // @version      3.3.1
-// @description  V3.3.1：把安装、更新和主体加载链路切到 jsDelivr，降低 GitHub 访问不稳定对脚本升级和运行的影响。
+// @description  V3.3.1：收口为单文件 userscript，普通 js 仅保留为老用户升级过渡镜像。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
