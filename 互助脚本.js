@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.0.0
-// @description  V3.0.0：使用自建 Cloudflare Worker + D1，Linux.do 仅用于首次身份绑定，互助次数可离线结算。
+// @version      3.1.0
+// @description  V3.1.0：使用自建 Cloudflare Worker + D1，Linux.do 仅用于首次身份绑定，互助次数可离线结算。
 // @author       roiding
 // @match        *://music.163.com/*
 // @grant        GM_xmlhttpRequest
@@ -18,7 +18,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.0.0';
+    const CURRENT_VERSION = '3.1.0';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ERROR_KEY = 'musicHelperLastError';
