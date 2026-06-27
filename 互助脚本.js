@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.2.1
-// @description  V3.2.1：增加最低支持版本提示机制，方便后续强提醒升级脚本。
+// @version      3.2.2
+// @description  V3.2.2：切换到 .user.js 分发链路，让更新按钮更容易直接触发 Tampermonkey 安装/更新。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
-// @downloadURL  https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/互助脚本.js
-// @updateURL    https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/互助脚本.js
+// @downloadURL  https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js
+// @updateURL    https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js
 // @match        *://music.163.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -22,8 +22,8 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.2.1';
-    const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/互助脚本.js';
+    const CURRENT_VERSION = '3.2.2';
+    const UPDATE_FALLBACK_URL = 'https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ERROR_KEY = 'musicHelperLastError';
@@ -328,7 +328,7 @@
             if(!authConfig) await fetchConfig();
             if(authConfig && authConfig.loginUrl) window.location.href = authConfig.loginUrl;
         };
-        document.getElementById('update-script-btn').onclick = () => { window.open(getUpdateUrl(), '_blank'); };
+        document.getElementById('update-script-btn').onclick = () => { window.location.href = getUpdateUrl(); };
         document.getElementById('logout-link').onclick = async () => {
             await callAPI('POST', '/auth/logout');
             GM_setValue(TOKEN_KEY, '');
