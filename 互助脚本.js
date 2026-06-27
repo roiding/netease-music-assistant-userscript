@@ -68,6 +68,52 @@
     }
 
     function formatTime(ms) { if (isNaN(ms) || ms <= 0) return "00:00"; const s = Math.floor(ms / 1000); return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    function extractSongId(value) {
+        const text = String(value || '');
+        const match = text.match(/(?:song\?id=|\/song\?id=|id=)(\d+)/);
+        return match ? match[1] : '';
+    }
+
+    function getAlbumSongIds() {
+        const ids = new Set();
+        try {
+            const frame = document.getElementById('g_iframe');
+            if (!frame || !frame.contentDocument) return [];
+            const doc = frame.contentDocument;
+            const selectors = [
+                '.m-table a[href*="song?id="]',
+                '.n-songtb a[href*="song?id="]',
+                'a[href*="song?id="]',
+                '[data-res-id][data-res-type="18"]'
+            ];
+            selectors.forEach(selector => {
+                doc.querySelectorAll(selector).forEach(el => {
+                    const fromHref = extractSongId(el.getAttribute('href'));
+                    const fromData = /^\d+$/.test(String(el.getAttribute('data-res-id') || ''))
+                        ? String(el.getAttribute('data-res-id'))
+                        : '';
+                    const songId = fromHref || fromData;
+                    if (songId) ids.add(songId);
+                });
+            });
+        } catch (e) {}
+        return Array.from(ids);
+    }
+
+    async function resolveAlbumSongId(albumId) {
+        window.location.hash = `#/album?id=${albumId}`;
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+            const songIds = getAlbumSongIds();
+            if (songIds.length > 0) {
+                return songIds[Math.floor(Math.random() * songIds.length)];
+            }
+            await wait(500);
+        }
+        return '';
+    }
 
     function initUI() {
         const token = GM_getValue(TOKEN_KEY, '');
@@ -280,31 +326,35 @@
         if (data.musicId) {
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
-            infoEl.innerText = `正在跳转...\n目标: ${data.owner && data.owner.displayName ? data.owner.displayName : '互助用户'}`;
             try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
-            setTimeout(() => { window.location.hash = `#/${type}?id=${id}`; }, 200);
+            if (type === 'album') {
+                infoEl.innerText = `正在从专辑随机选歌...\n目标: ${data.owner && data.owner.displayName ? data.owner.displayName : '互助用户'}`;
+                const randomSongId = await resolveAlbumSongId(id);
+                if (!randomSongId) {
+                    infoEl.innerText = '专辑歌曲读取失败，稍后重试';
+                    setTimeout(playNext, 5000);
+                    return;
+                }
+                type = 'song';
+                id = randomSongId;
+                infoEl.innerText = `已从专辑中随机选中一首歌\n正在跳转...`;
+            } else {
+                infoEl.innerText = `正在跳转...\n目标: ${data.owner && data.owner.displayName ? data.owner.displayName : '互助用户'}`;
+            }
+
+            setTimeout(() => { window.location.hash = `#/song?id=${id}`; }, 200);
             let startTime = Date.now(), hasTriggered = false, finished = false;
-            let prevCur = 0, prevDur = 0, prevTickAt = 0;
-            let albumTrackSwitches = 0, localListenedMs = 0, suspiciousJumps = 0;
+            let prevCur = 0, prevDur = 0, prevTickAt = 0, localListenedMs = 0, suspiciousJumps = 0;
             monitorTimer = setInterval(async () => {
                 if (!isHelperRunning || finished) return;
                 const { cur, dur, state } = getProgress();
                 const now = Date.now();
                 const elapsed = now - startTime;
-                const looksLikeTrackSwitch = type === 'album'
-                    && prevDur > 0
-                    && prevCur >= Math.max(prevDur - 5000, prevDur * 0.85)
-                    && cur <= Math.min(15000, dur > 0 ? dur * 0.25 : 15000)
-                    && state === 'play';
 
                 if (prevTickAt > 0) {
                     const wallDelta = Math.max(0, now - prevTickAt);
                     const allowedProgress = wallDelta * 1.5 + 3000;
-                    if (looksLikeTrackSwitch) {
-                        albumTrackSwitches += 1;
-                        localListenedMs += Math.max(0, Math.min(prevDur - prevCur, wallDelta + 3000));
-                        localListenedMs += Math.max(0, Math.min(cur, wallDelta + 3000));
-                    } else if (cur >= prevCur) {
+                    if (cur >= prevCur) {
                         const progressDelta = cur - prevCur;
                         if (progressDelta > allowedProgress) {
                             suspiciousJumps += 1;
@@ -318,20 +368,13 @@
                 if (!hasTriggered && elapsed > 5000 && state !== 'play') hasTriggered = triggerIframePlay();
                 if (dur > 0) {
                     document.getElementById('manual-btn').style.display = 'none';
-                    if (type === 'album') {
-                        infoEl.innerText = `正在互助 [专辑]\n进度: ${formatTime(cur)} / ${formatTime(dur)}\n已切到下一首: ${albumTrackSwitches} 次`;
-                    } else {
-                        infoEl.innerText = `正在互助 [单曲]\n进度: ${formatTime(cur)} / ${formatTime(dur)}`;
-                    }
+                    infoEl.innerText = `正在互助 [${data.musicId.startsWith('album:') ? '专辑随机单曲' : '单曲'}]\n进度: ${formatTime(cur)} / ${formatTime(dur)}`;
 
                     const enoughSongListen = localListenedMs >= Math.max(20000, dur * 0.5);
                     const songFinished = (cur >= dur - 2000 || (state === 'stop' && cur > 0))
                         && enoughSongListen
                         && suspiciousJumps <= 1;
-                    const albumFinished = type === 'album'
-                        && albumTrackSwitches >= 1
-                        && suspiciousJumps <= 1;
-                    if ((type === 'song' && songFinished) || albumFinished) {
+                    if (songFinished) {
                         finished = true;
                         clearInterval(monitorTimer);
                         const result = await finishCurrentJob(jobId, cur);
