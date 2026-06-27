@@ -6,7 +6,7 @@ Tampermonkey userscript for Netease Music mutual playback.
 
 - GitHub: [netease-music-assistant-userscript](https://github.com/roiding/netease-music-assistant-userscript)
 - Direct install:
-  [互助脚本.user.js](https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js)
+  [互助脚本.user.js](https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js)
 
 ## Configure
 
