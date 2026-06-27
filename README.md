@@ -32,3 +32,7 @@ to the userscript-side album parsing logic.
 
 Tampermonkey will use the `@downloadURL` and `@updateURL` metadata to check for
 new versions from the GitHub-backed jsDelivr URL.
+
+From `v3.2.1` onward, the script also sends its version to the Worker so the
+backend can show a stronger in-panel upgrade prompt when you raise the minimum
+supported version.

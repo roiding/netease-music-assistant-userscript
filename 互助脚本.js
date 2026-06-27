@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.2.0
-// @description  V3.2.0：按歌曲时长预扣互助额度，专辑由后端随机选歌，增加月度封顶控制。
+// @version      3.2.1
+// @description  V3.2.1：增加最低支持版本提示机制，方便后续强提醒升级脚本。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,8 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.2.0';
+    const CURRENT_VERSION = '3.2.1';
+    const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/互助脚本.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ERROR_KEY = 'musicHelperLastError';
@@ -33,6 +34,7 @@
     let authConfig = null;
     let isDragging = false;
     let activeJoinState = null;
+    let upgradeRequired = false;
 
     function safeJSON(text) { try { return JSON.parse(text); } catch (e) { return null; } }
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
@@ -89,10 +91,27 @@
 
     function formatTime(ms) { if (isNaN(ms) || ms <= 0) return "00:00"; const s = Math.floor(ms / 1000); return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }
     function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+    function normalizeVersion(value) {
+        const match = String(value || '').trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+        return match ? `${match[1]}.${match[2]}.${match[3]}` : '';
+    }
+    function compareVersions(left, right) {
+        const a = normalizeVersion(left).split('.').map(n => Number(n || 0));
+        const b = normalizeVersion(right).split('.').map(n => Number(n || 0));
+        for (let i = 0; i < 3; i += 1) {
+            const delta = (a[i] || 0) - (b[i] || 0);
+            if (delta !== 0) return delta > 0 ? 1 : -1;
+        }
+        return 0;
+    }
+    function getUpdateUrl() {
+        return (authConfig && authConfig.updateUrl) || UPDATE_FALLBACK_URL;
+    }
     function getErrorText(code) {
         if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
         if (code === 'registration_required') return '当前账号尚未完成注册，请先完成开通流程。';
         if (code === 'invalid_or_expired_token') return '登录态已失效，请重新登录。';
+        if (code === 'client_upgrade_required') return '当前脚本版本过旧，请先更新到最新版本后再继续使用。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -115,6 +134,34 @@
         if (authSection) authSection.style.display = 'block';
         if (helperForm) helperForm.style.display = 'none';
         if (logoutLink) logoutLink.style.display = 'none';
+    }
+
+    function showUpgradeRequired(requiredVersion, latestVersion) {
+        upgradeRequired = true;
+        stopHelper();
+        const loginStatus = document.getElementById('login-status');
+        const helperInfo = document.getElementById('helper-info');
+        const authSection = document.getElementById('auth-section');
+        const helperForm = document.getElementById('helper-form');
+        const loginButton = document.getElementById('login-linuxdo');
+        const updateButton = document.getElementById('update-script-btn');
+        const requiredText = normalizeVersion(requiredVersion) || (authConfig && authConfig.minSupportedVersion) || '';
+        const latestText = normalizeVersion(latestVersion) || (authConfig && authConfig.latestVersion) || '';
+        const title = requiredText
+            ? `脚本版本过旧，最低支持版本为 v${requiredText}`
+            : '脚本版本过旧，请先更新';
+        const detail = latestText && latestText !== requiredText
+            ? `当前最新版本：v${latestText}`
+            : '';
+        if (loginStatus) loginStatus.innerText = title;
+        if (helperInfo) {
+            helperInfo.style.display = 'block';
+            helperInfo.innerText = `${title}${detail ? `\n${detail}` : ''}\n点击下方按钮安装最新版脚本。`;
+        }
+        if (authSection) authSection.style.display = 'block';
+        if (helperForm) helperForm.style.display = 'none';
+        if (loginButton) loginButton.style.display = 'none';
+        if (updateButton) updateButton.style.display = 'block';
     }
 
     async function fetchSongDuration(songId) {
@@ -238,6 +285,7 @@
                     <div id="login-status" style="font-size:12px; margin-bottom:8px; color:#666;">${token ? '检测登录中...' : '未登录'}</div>
                     <div id="auth-section" style="${token ? 'display:none' : 'display:block'}">
                         <button id="login-linuxdo" style="background:#000; color:#fff; width:100%; padding:8px; border:none; border-radius:4px; cursor:pointer;">登录 Linux.do</button>
+                        <button id="update-script-btn" style="display:none; margin-top:8px; background:#d33; color:#fff; width:100%; padding:8px; border:none; border-radius:4px; cursor:pointer;">更新脚本</button>
                     </div>
                     <div id="helper-form" style="${token ? 'display:block' : 'display:none'}">
                         <div style="display:flex; margin-bottom:8px;">
@@ -280,6 +328,7 @@
             if(!authConfig) await fetchConfig();
             if(authConfig && authConfig.loginUrl) window.location.href = authConfig.loginUrl;
         };
+        document.getElementById('update-script-btn').onclick = () => { window.open(getUpdateUrl(), '_blank'); };
         document.getElementById('logout-link').onclick = async () => {
             await callAPI('POST', '/auth/logout');
             GM_setValue(TOKEN_KEY, '');
@@ -303,6 +352,7 @@
         return new Promise(r => GM_xmlhttpRequest({
             method:'GET',
             url:`${API_BASE}/auth-config`,
+            headers:{'X-Music-Helper-Version': CURRENT_VERSION},
             onload:res=>{
                 const d = safeJSON(res.responseText);
                 if(d && d.latestVersion && d.latestVersion !== CURRENT_VERSION) {
@@ -310,7 +360,11 @@
                     up.innerHTML = `<div style="background:#fffbe6; border:1px solid #ffe58f; padding:8px; border-radius:4px; margin-bottom:8px; font-size:11px; color:#856404;">发现新版本 v${d.latestVersion}</div>`;
                     document.getElementById('helper-body').prepend(up);
                 }
-                authConfig = d; r(d);
+                authConfig = d;
+                if (d && d.minSupportedVersion && compareVersions(CURRENT_VERSION, d.minSupportedVersion) < 0) {
+                    showUpgradeRequired(d.minSupportedVersion, d.latestVersion);
+                }
+                r(d);
             },
             onerror:()=>r(null),
             ontimeout:()=>r(null)
@@ -320,7 +374,7 @@
     async function callAPI(method, path, body = null) {
         const token = GM_getValue(TOKEN_KEY, '');
         return new Promise(r => GM_xmlhttpRequest({
-            method, url:`${API_BASE}${path}`, headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
+            method, url:`${API_BASE}${path}`, headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json','X-Music-Helper-Version': CURRENT_VERSION},
             data: body?JSON.stringify(body):null,
             onload: res=>{
                 const payload = safeJSON(res.responseText);
@@ -332,6 +386,11 @@
                     return;
                 }
                 if(res.status===403){
+                    if (payload && payload.error === 'client_upgrade_required') {
+                        showUpgradeRequired(payload.minSupportedVersion, payload.latestVersion);
+                        r(payload);
+                        return;
+                    }
                     handleAccessError(payload && payload.error ? payload.error : 'forbidden');
                     r(payload);
                     return;
@@ -348,10 +407,15 @@
         return new Promise(r => GM_xmlhttpRequest({
             method:'POST',
             url:`${API_BASE}/auth/claim`,
-            headers:{'Content-Type':'application/json'},
+            headers:{'Content-Type':'application/json','X-Music-Helper-Version': CURRENT_VERSION},
             data: JSON.stringify({ ticket }),
             onload: res => {
                 const d = safeJSON(res.responseText);
+                if (res.status === 403 && d && d.error === 'client_upgrade_required') {
+                    showUpgradeRequired(d.minSupportedVersion, d.latestVersion);
+                    r(false);
+                    return;
+                }
                 if(d && d.access_token){
                     GM_setValue(TOKEN_KEY,d.access_token);
                     GM_setValue(LEGACY_TOKEN_KEY,'');
@@ -389,6 +453,7 @@
     }
 
     async function toggleHelper() {
+        if (upgradeRequired) return;
         const mid = document.getElementById('my-music-id').value.trim();
         const mtp = document.getElementById('my-music-type').value;
         if(!mid) return;
@@ -401,9 +466,15 @@
         activeJoinState = null;
         clearInterval(monitorTimer);
         clearInterval(joinTimer);
-        document.getElementById('toggle-helper').innerText = '开启互助';
-        document.getElementById('toggle-helper').style.background = '#d33';
-        document.getElementById('helper-info').innerText = '已停止本机互助播放；已保存的 ID 仍会按剩余额度被其他人互助。';
+        const toggleButton = document.getElementById('toggle-helper');
+        const helperInfo = document.getElementById('helper-info');
+        if (toggleButton) {
+            toggleButton.innerText = '开启互助';
+            toggleButton.style.background = '#d33';
+        }
+        if (helperInfo) {
+            helperInfo.innerText = '已停止本机互助播放；已保存的 ID 仍会按剩余额度被其他人互助。';
+        }
     }
 
     async function startHelper(mid, mtp) {
@@ -543,16 +614,26 @@
     }
 
     setTimeout(async () => {
+        initUI();
         const params = new URLSearchParams(window.location.search);
         const ticket = params.get('music_helper_ticket');
         const loginError = params.get('music_helper_error');
         if (ticket) {
-            await claimTicket(ticket);
+            const claimed = await claimTicket(ticket);
             cleanLoginParams();
+            if (claimed) {
+                const authSection = document.getElementById('auth-section');
+                const helperForm = document.getElementById('helper-form');
+                const logoutLink = document.getElementById('logout-link');
+                if (authSection) authSection.style.display = 'none';
+                if (helperForm) helperForm.style.display = 'block';
+                if (logoutLink) logoutLink.style.display = 'block';
+                await refreshMe();
+            }
         } else if (loginError) {
             GM_setValue(ERROR_KEY, loginError);
             cleanLoginParams();
+            handleAccessError(loginError);
         }
-        initUI();
     }, 1500);
 })();
