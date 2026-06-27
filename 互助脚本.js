@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.1.0
-// @description  V3.1.0：使用自建 Cloudflare Worker + D1，Linux.do 仅用于首次身份绑定，互助次数可离线结算。
+// @version      3.2.0
+// @description  V3.2.0：按歌曲时长预扣互助额度，专辑由后端随机选歌，增加月度封顶控制。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.1.0';
+    const CURRENT_VERSION = '3.2.0';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ERROR_KEY = 'musicHelperLastError';
@@ -32,6 +32,7 @@
     let joinTimer = null;
     let authConfig = null;
     let isDragging = false;
+    let activeJoinState = null;
 
     function safeJSON(text) { try { return JSON.parse(text); } catch (e) { return null; } }
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
@@ -70,6 +71,22 @@
         return { cur, dur, state };
     }
 
+    function getPlaybackRate() {
+        try {
+            const p = getSafePlayer();
+            if (p && p.audio && Number.isFinite(Number(p.audio.playbackRate))) {
+                return Number(p.audio.playbackRate);
+            }
+        } catch (e) {}
+        try {
+            const audio = document.querySelector('audio');
+            if (audio && Number.isFinite(Number(audio.playbackRate))) {
+                return Number(audio.playbackRate);
+            }
+        } catch (e) {}
+        return 1;
+    }
+
     function formatTime(ms) { if (isNaN(ms) || ms <= 0) return "00:00"; const s = Math.floor(ms / 1000); return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }
     function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
     function getErrorText(code) {
@@ -100,17 +117,46 @@
         if (logoutLink) logoutLink.style.display = 'none';
     }
 
-    async function fetchAlbumSongIds(albumId) {
+    async function fetchSongDuration(songId) {
+        try {
+            const normalizedSongId = encodeURIComponent(String(songId || '').trim());
+            const res = await fetch(`/api/song/detail/?ids=%5B${normalizedSongId}%5D`, { credentials: 'include' });
+            const data = safeJSON(await res.text());
+            const songs = Array.isArray(data && data.songs) ? data.songs : [];
+            const song = songs.find(item => String(item && item.id ? item.id : '') === String(songId));
+            const durationMs = Number(song && (song.dt || song.duration || 0));
+            if (Number.isFinite(durationMs) && durationMs > 0) return Math.floor(durationMs);
+        } catch (e) {}
+
+        const currentSongId = extractSongId(window.location.hash);
+        const { dur } = getProgress();
+        if (currentSongId === String(songId) && dur > 0) return dur;
+        return 0;
+    }
+
+    async function fetchAlbumTracks(albumId) {
         try {
             const res = await fetch(`/api/v1/album/${albumId}`, { credentials: 'include' });
             const data = safeJSON(await res.text());
             const songs = Array.isArray(data && data.songs) ? data.songs : [];
             return songs
-                .map(song => String(song && song.id ? song.id : '').trim())
-                .filter(id => /^\d+$/.test(id));
+                .map(song => {
+                    const id = String(song && song.id ? song.id : '').trim();
+                    const durationMs = Number(song && (song.dt || song.duration || 0));
+                    if (!/^\d+$/.test(id) || !Number.isFinite(durationMs) || durationMs <= 0) {
+                        return null;
+                    }
+                    return { id, durationMs: Math.floor(durationMs) };
+                })
+                .filter(Boolean);
         } catch (e) {
             return [];
         }
+    }
+
+    async function fetchAlbumSongIds(albumId) {
+        const tracks = await fetchAlbumTracks(albumId);
+        return tracks.map(track => track.id);
     }
 
     function extractSongId(value) {
@@ -161,6 +207,16 @@
             await wait(500);
         }
         return '';
+    }
+
+    async function resolveMusicMeta(musicId, musicType) {
+        if (musicType === 'song') {
+            const durationMs = await fetchSongDuration(musicId);
+            return durationMs > 0 ? { durationMs } : null;
+        }
+
+        const tracks = await fetchAlbumTracks(musicId);
+        return tracks.length > 0 ? { tracks } : null;
     }
 
     function initUI() {
@@ -321,9 +377,14 @@
         if (!participant) return;
         const infoEl = document.getElementById('helper-info');
         const credits = Number(participant.credits || 0);
+        const monthlyReceived = Number(participant.monthly_received_help_count || 0);
+        const monthlyLimit = Number(participant.monthly_received_limit || 0);
+        const monthlyLine = monthlyLimit > 0
+            ? `本月已收到: ${monthlyReceived} / ${monthlyLimit}${participant.monthly_cap_reached ? '（已封顶）' : ''}`
+            : '';
         if (!isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助次数: ${credits}\n已帮别人: ${participant.completed_help_count || 0} 次\n已收到互助: ${participant.received_help_count || 0} 次`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}\n已帮别人: ${participant.completed_help_count || 0} 次\n累计收到互助: ${participant.received_help_count || 0} 次${monthlyLine ? `\n${monthlyLine}` : ''}`;
         }
     }
 
@@ -337,41 +398,51 @@
 
     function stopHelper() {
         isHelperRunning = false;
+        activeJoinState = null;
         clearInterval(monitorTimer);
         clearInterval(joinTimer);
         document.getElementById('toggle-helper').innerText = '开启互助';
         document.getElementById('toggle-helper').style.background = '#d33';
-        document.getElementById('helper-info').innerText = '已停止本机互助播放；已保存的 ID 仍会按剩余次数被其他人互助。';
+        document.getElementById('helper-info').innerText = '已停止本机互助播放；已保存的 ID 仍会按剩余额度被其他人互助。';
     }
 
     async function startHelper(mid, mtp) {
         isHelperRunning = true;
+        activeJoinState = { mid, mtp, musicMeta: null };
         document.getElementById('toggle-helper').innerText = '停止互助';
         document.getElementById('toggle-helper').style.background = '#666';
         document.getElementById('helper-info').style.display = 'block';
         document.getElementById('helper-info').innerText = '正在加入互助队列...';
 
-        const joined = await joinSelf(mid, mtp);
+        const joined = await joinSelf(activeJoinState);
         if (!joined) {
             stopHelper();
             document.getElementById('helper-info').innerText = '服务器连接失败，未能加入互助队列';
             return;
         }
 
-        joinTimer = setInterval(() => joinSelf(mid, mtp), 60000);
+        joinTimer = setInterval(() => {
+            if (activeJoinState) joinSelf(activeJoinState);
+        }, 60000);
         playNext();
     }
 
-    async function joinSelf(mid, mtp) {
-        const d = await callAPI('POST', '/join', { musicId: `${mtp}:${mid}` });
+    async function joinSelf(state) {
+        if (!state) return false;
+        if (!state.musicMeta) {
+            state.musicMeta = await resolveMusicMeta(state.mid, state.mtp);
+        }
+        const payload = { musicId: `${state.mtp}:${state.mid}` };
+        if (state.musicMeta) payload.musicMeta = state.musicMeta;
+        const d = await callAPI('POST', '/join', payload);
         if(d && d.loginUser) document.getElementById('login-status').innerText = `已登录: ${d.loginUser}`;
         if(d && d.participant) updateParticipantInfo(d.participant);
         return !!(d && d.ok);
     }
 
-    async function finishCurrentJob(jobId, playedMs) {
+    async function finishCurrentJob(jobId, playedMs, positionMs, durationMs) {
         if (!jobId) return null;
-        return callAPI('POST', '/play/finish', { jobId, playedMs });
+        return callAPI('POST', '/play/finish', { jobId, playedMs, positionMs, durationMs });
     }
 
     async function playNext() {
@@ -384,8 +455,10 @@
         if (data.participant) updateParticipantInfo(data.participant);
 
         if (data.musicId) {
+            const sourceMusicId = data.sourceMusicId || data.musicId;
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
+            const creditCost = Number(data.creditCost || 1);
             try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
             if (type === 'album') {
                 infoEl.innerText = `正在从专辑随机选歌...\n目标: ${data.owner && data.owner.displayName ? data.owner.displayName : '互助用户'}`;
@@ -425,19 +498,26 @@
                     }
                 }
 
+                const playbackRate = getPlaybackRate();
+                const playbackRateInvalid = state === 'play' && playbackRate > 1.05;
+
                 if (!hasTriggered && elapsed > 5000 && state !== 'play') hasTriggered = triggerIframePlay();
                 if (dur > 0) {
                     document.getElementById('manual-btn').style.display = 'none';
-                    infoEl.innerText = `正在互助 [${data.musicId.startsWith('album:') ? '专辑随机单曲' : '单曲'}]\n进度: ${formatTime(cur)} / ${formatTime(dur)}`;
+                    const requiredListenMs = Math.max(Number(data.requiredListenMs || 0), Math.max(20000, Math.floor(dur * 0.75)));
+                    const isAlbumSource = String(sourceMusicId).startsWith('album:');
+                    const speedWarning = playbackRateInvalid ? '\n检测到倍速播放，请恢复 1x 后继续' : '';
+                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n进度: ${formatTime(cur)} / ${formatTime(dur)}\n有效播放: ${formatTime(localListenedMs)} / ${formatTime(requiredListenMs)}\n本次消耗额度: ${creditCost}${speedWarning}`;
 
-                    const enoughSongListen = localListenedMs >= Math.max(20000, dur * 0.5);
+                    const enoughSongListen = localListenedMs >= requiredListenMs;
                     const songFinished = (cur >= dur - 2000 || (state === 'stop' && cur > 0))
                         && enoughSongListen
-                        && suspiciousJumps <= 1;
+                        && suspiciousJumps <= 1
+                        && !playbackRateInvalid;
                     if (songFinished) {
                         finished = true;
                         clearInterval(monitorTimer);
-                        const result = await finishCurrentJob(jobId, cur);
+                        const result = await finishCurrentJob(jobId, localListenedMs, cur, dur);
                         if (result && result.participant) updateParticipantInfo(result.participant);
                         setTimeout(playNext, 2000);
                     }
