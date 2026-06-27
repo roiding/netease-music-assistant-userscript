@@ -268,6 +268,16 @@
         return callAPI('POST', '/play/finish', { jobId, playedMs });
     }
 
+    async function reportProgress(jobId, cur, dur, state) {
+        if (!jobId || dur <= 0) return null;
+        return callAPI('POST', '/play/progress', {
+            jobId,
+            positionMs: cur,
+            durationMs: dur,
+            state
+        });
+    }
+
     async function playNext() {
         if (!isHelperRunning) return;
         clearInterval(monitorTimer);
@@ -284,17 +294,41 @@
             try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
             setTimeout(() => { window.location.hash = `#/${type}?id=${id}`; }, 200);
             let startTime = Date.now(), hasTriggered = false, finished = false;
+            let lastReportedAt = 0, prevCur = 0, prevDur = 0, albumTrackSwitches = 0;
             monitorTimer = setInterval(async () => {
                 if (!isHelperRunning || finished) return;
                 const { cur, dur, state } = getProgress();
                 const elapsed = Date.now() - startTime;
+                const looksLikeTrackSwitch = type === 'album'
+                    && prevDur > 0
+                    && prevCur >= Math.max(prevDur - 5000, prevDur * 0.85)
+                    && cur <= Math.min(15000, dur > 0 ? dur * 0.25 : 15000)
+                    && state === 'play';
+
+                if (looksLikeTrackSwitch) {
+                    albumTrackSwitches += 1;
+                }
+
                 if (!hasTriggered && elapsed > 5000 && state !== 'play') hasTriggered = triggerIframePlay();
                 if (dur > 0) {
                     document.getElementById('manual-btn').style.display = 'none';
-                    infoEl.innerText = `正在互助 [${type==='song'?'单曲':'专辑'}]\n进度: ${formatTime(cur)} / ${formatTime(dur)}`;
-                    if (cur >= dur - 2000 || (state === 'stop' && cur > 0)) {
+                    if (Date.now() - lastReportedAt >= 5000 || looksLikeTrackSwitch) {
+                        lastReportedAt = Date.now();
+                        await reportProgress(jobId, cur, dur, state);
+                    }
+
+                    if (type === 'album') {
+                        infoEl.innerText = `正在互助 [专辑]\n进度: ${formatTime(cur)} / ${formatTime(dur)}\n已切到下一首: ${albumTrackSwitches} 次`;
+                    } else {
+                        infoEl.innerText = `正在互助 [单曲]\n进度: ${formatTime(cur)} / ${formatTime(dur)}`;
+                    }
+
+                    const songFinished = cur >= dur - 2000 || (state === 'stop' && cur > 0);
+                    const albumFinished = type === 'album' && albumTrackSwitches >= 1;
+                    if ((type === 'song' && songFinished) || albumFinished) {
                         finished = true;
                         clearInterval(monitorTimer);
+                        await reportProgress(jobId, cur, dur, state);
                         const result = await finishCurrentJob(jobId, cur);
                         if (result && result.participant) updateParticipantInfo(result.participant);
                         setTimeout(playNext, 2000);
@@ -303,6 +337,8 @@
                     infoEl.innerText = `正在努力加载...`;
                     if (elapsed > 20000) document.getElementById('manual-btn').style.display = 'block';
                 }
+                prevCur = cur;
+                prevDur = dur;
             }, 1000);
         } else {
             infoEl.innerText = '暂无可互助目标，30s 后重试';
