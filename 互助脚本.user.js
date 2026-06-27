@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2
-// @description  V3.2.2：切换到 .user.js 分发链路，让更新按钮更容易直接触发 Tampermonkey 安装/更新。
+// @version      3.3.0
+// @description  V3.3.0：增强底部播放栏展开、播放列表打开与“清除”按钮点击的状态校验，提升整条清队列链路的稳定性。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues

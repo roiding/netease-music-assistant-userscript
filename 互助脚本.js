@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2
-// @description  V3.2.2：切换到 .user.js 分发链路，让更新按钮更容易直接触发 Tampermonkey 安装/更新。
+// @version      3.3.0
+// @description  V3.3.0：增强底部播放栏展开、播放列表打开与“清除”按钮点击的状态校验，提升整条清队列链路的稳定性。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.2.2';
+    const CURRENT_VERSION = '3.3.0';
     const UPDATE_FALLBACK_URL = 'https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
@@ -87,6 +87,163 @@
             }
         } catch (e) {}
         return 1;
+    }
+
+    function getCurrentPlayingSongId() {
+        try {
+            const currentLink = document.querySelector('.m-playbar .words .name') || document.querySelector('.g-btmbar a[href*="song?id="]');
+            return currentLink ? extractSongId(currentLink.getAttribute('href')) : '';
+        } catch (e) {}
+        return '';
+    }
+
+    function getQueueCount() {
+        try {
+            const panelBtn = document.querySelector('.m-playbar a[data-action="panel"]');
+            const count = Number((panelBtn && panelBtn.textContent || '').trim());
+            return Number.isFinite(count) ? count : 0;
+        } catch (e) {}
+        return 0;
+    }
+
+    async function ensurePlaybarExpanded() {
+        try {
+            const hand = document.querySelector('.g-btmbar .hand, .m-playbar .hand');
+            if (!hand) return false;
+            const title = String(hand.getAttribute('title') || '').trim();
+            if (title.includes('展开播放条')) {
+                hand.click();
+                await wait(300);
+                return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    function getVisibleQueuePanelState() {
+        const panelBtn = document.querySelector('.m-playbar a[data-action="panel"]');
+        const clearButton = Array.from(document.querySelectorAll('.m-playbar a, .m-playbar button, .m-layer a, .m-layer button'))
+            .find((node) => {
+                const text = String(node.textContent || '').trim();
+                const title = String(node.getAttribute('title') || '').trim();
+                const aria = String(node.getAttribute('aria-label') || '').trim();
+                return text === '清除' || title === '清除' || aria === '清除';
+            });
+        return {
+            queueCount: getQueueCount(),
+            panelButtonVisible: !!(panelBtn && panelBtn.offsetParent !== null),
+            clearButton,
+        };
+    }
+
+    async function openQueuePanelBestEffort() {
+        const panelBtn = document.querySelector('.m-playbar a[data-action="panel"]');
+        if (!panelBtn) return null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            panelBtn.click();
+            await wait(350 + attempt * 150);
+            const state = getVisibleQueuePanelState();
+            if (state.clearButton) {
+                return state;
+            }
+        }
+        return getVisibleQueuePanelState();
+    }
+
+    function ensureTargetSong(targetSongId) {
+        if (!targetSongId) return;
+        const currentHashSongId = extractSongId(window.location.hash);
+        if (currentHashSongId !== String(targetSongId)) {
+            window.location.hash = `#/song?id=${targetSongId}`;
+        }
+    }
+
+    async function forcePlayTargetSong(targetSongId) {
+        if (!targetSongId) return false;
+        ensureTargetSong(targetSongId);
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+            const currentHashSongId = extractSongId(window.location.hash);
+            if (currentHashSongId !== String(targetSongId)) {
+                ensureTargetSong(targetSongId);
+                await wait(400);
+                continue;
+            }
+
+            const clicked = triggerIframePlay();
+            await wait(clicked ? 1200 : 600);
+            if (getCurrentPlayingSongId() === String(targetSongId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    async function clearPlayQueueBestEffort() {
+        await ensurePlaybarExpanded();
+        const panelBtn = document.querySelector('.m-playbar a[data-action="panel"]');
+        if (!panelBtn) return false;
+        const queueCount = getQueueCount();
+        if (queueCount <= 1) return false;
+
+        const clearKeywords = ['清空', '清除', '删除全部', '清空列表', 'Clear'];
+        const selectors = [
+            '.m-playbar .listhdc a',
+            '.m-playbar .listhdc .clear',
+            '.m-playbar .listbd a',
+            '.m-playbar .listlyric a',
+            '.m-playbar a',
+            '.m-playbar button',
+            '.m-layer a',
+            '.m-layer button',
+        ];
+
+        const findClearButton = () => {
+            const exactMatches = [];
+            for (const selector of selectors) {
+                const nodes = document.querySelectorAll(selector);
+                for (const node of nodes) {
+                    const text = String(node.textContent || '').trim();
+                    const title = String(node.getAttribute('title') || '').trim();
+                    const aria = String(node.getAttribute('aria-label') || '').trim();
+                    if (text === '清除' || title === '清除' || aria === '清除') {
+                        exactMatches.push(node);
+                        continue;
+                    }
+                    if (clearKeywords.some((keyword) => text.includes(keyword) || title.includes(keyword) || aria.includes(keyword))) {
+                        exactMatches.push(node);
+                    }
+                }
+            }
+            return exactMatches[0] || null;
+        };
+
+        try {
+            let state = await openQueuePanelBestEffort();
+            let clearBtn = state && state.clearButton ? state.clearButton : findClearButton();
+            if (!clearBtn) return false;
+
+            clearBtn.click();
+            await wait(500);
+
+            const confirmBtn = Array.from(document.querySelectorAll('.m-layer a, .m-layer button, .z-show a, .z-show button'))
+                .find((node) => {
+                    const text = String(node.textContent || '').trim();
+                    return /确定|确认|清空|是/.test(text);
+                });
+            if (confirmBtn) {
+                confirmBtn.click();
+                await wait(500);
+            }
+            const finalCount = getQueueCount();
+            return finalCount <= 1;
+        } catch (e) {
+            return false;
+        } finally {
+            try {
+                panelBtn.click();
+            } catch (e) {}
+        }
     }
 
     function formatTime(ms) { if (isNaN(ms) || ms <= 0) return "00:00"; const s = Math.floor(ms / 1000); return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }
@@ -530,6 +687,7 @@
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
             const creditCost = Number(data.creditCost || 1);
+            const expectedDurationMs = Number(data.targetDurationMs || 0);
             try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
             if (type === 'album') {
                 infoEl.innerText = `正在从专辑随机选歌...\n目标: ${data.owner && data.owner.displayName ? data.owner.displayName : '互助用户'}`;
@@ -546,14 +704,63 @@
                 infoEl.innerText = `正在跳转...\n目标: ${data.owner && data.owner.displayName ? data.owner.displayName : '互助用户'}`;
             }
 
-            setTimeout(() => { window.location.hash = `#/song?id=${id}`; }, 200);
+            const expectedSongId = String(id);
+            ensureTargetSong(expectedSongId);
+            await wait(600);
+            await clearPlayQueueBestEffort();
+            const forcePlayed = await forcePlayTargetSong(expectedSongId);
+            if (!forcePlayed) {
+                infoEl.innerText = `目标歌曲加载失败，准备重试...\n目标歌曲: ${expectedSongId}`;
+                setTimeout(playNext, 3000);
+                return;
+            }
             let startTime = Date.now(), hasTriggered = false, finished = false;
             let prevCur = 0, prevDur = 0, prevTickAt = 0, localListenedMs = 0, suspiciousJumps = 0;
+            let mismatchTicks = 0, lastRetargetAt = 0, retargeting = false;
             monitorTimer = setInterval(async () => {
                 if (!isHelperRunning || finished) return;
                 const { cur, dur, state } = getProgress();
                 const now = Date.now();
                 const elapsed = now - startTime;
+                const currentHashSongId = extractSongId(window.location.hash);
+                const currentPlayingSongId = getCurrentPlayingSongId();
+                const hashMismatch = currentHashSongId && currentHashSongId !== expectedSongId;
+                const playingSongMismatch = currentPlayingSongId && currentPlayingSongId !== expectedSongId;
+                const durationMismatch = expectedDurationMs > 0
+                    && dur > 0
+                    && Math.abs(dur - expectedDurationMs) > Math.max(12000, expectedDurationMs * 0.12);
+
+                if (hashMismatch || playingSongMismatch || (elapsed > 8000 && durationMismatch)) {
+                    mismatchTicks += 1;
+                    infoEl.innerText = `当前加载歌曲与任务不一致，正在重新跳转...\n目标歌曲: ${expectedSongId}\n预期时长: ${expectedDurationMs > 0 ? formatTime(expectedDurationMs) : '未知'}`;
+                    if (!retargeting && now - lastRetargetAt > 4000) {
+                        lastRetargetAt = now;
+                        retargeting = true;
+                        try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
+                        const corrected = await forcePlayTargetSong(expectedSongId);
+                        retargeting = false;
+                        if (!corrected && mismatchTicks >= 6) {
+                            finished = true;
+                            clearInterval(monitorTimer);
+                            setTimeout(playNext, 3000);
+                            return;
+                        }
+                    }
+                    if (mismatchTicks >= 12) {
+                        finished = true;
+                        clearInterval(monitorTimer);
+                        setTimeout(playNext, 3000);
+                    }
+                    prevCur = 0;
+                    prevDur = 0;
+                    prevTickAt = 0;
+                    localListenedMs = 0;
+                    return;
+                }
+
+                mismatchTicks = 0;
+
+                const listenCeilingMs = Math.max(expectedDurationMs || 0, dur || 0);
 
                 if (prevTickAt > 0) {
                     const wallDelta = Math.max(0, now - prevTickAt);
@@ -562,11 +769,16 @@
                         const progressDelta = cur - prevCur;
                         if (progressDelta > allowedProgress) {
                             suspiciousJumps += 1;
+                        } else {
+                            localListenedMs = Math.max(localListenedMs, cur);
                         }
-                        localListenedMs += Math.max(0, Math.min(progressDelta, wallDelta + 3000));
                     } else if (prevCur - cur > 15000) {
                         suspiciousJumps += 1;
                     }
+                }
+
+                if (listenCeilingMs > 0) {
+                    localListenedMs = Math.min(localListenedMs, listenCeilingMs);
                 }
 
                 const playbackRate = getPlaybackRate();
@@ -575,12 +787,14 @@
                 if (!hasTriggered && elapsed > 5000 && state !== 'play') hasTriggered = triggerIframePlay();
                 if (dur > 0) {
                     document.getElementById('manual-btn').style.display = 'none';
-                    const requiredListenMs = Math.max(Number(data.requiredListenMs || 0), Math.max(20000, Math.floor(dur * 0.75)));
+                    const requiredListenMs = Number(data.requiredListenMs || Math.max(20000, Math.floor(dur * 0.75)));
                     const isAlbumSource = String(sourceMusicId).startsWith('album:');
                     const speedWarning = playbackRateInvalid ? '\n检测到倍速播放，请恢复 1x 后继续' : '';
-                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n进度: ${formatTime(cur)} / ${formatTime(dur)}\n有效播放: ${formatTime(localListenedMs)} / ${formatTime(requiredListenMs)}\n本次消耗额度: ${creditCost}${speedWarning}`;
+                    const displayDurationMs = expectedDurationMs > 0 ? expectedDurationMs : dur;
+                    const displayListenedMs = displayDurationMs > 0 ? Math.min(localListenedMs, displayDurationMs) : localListenedMs;
+                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n进度: ${formatTime(cur)} / ${formatTime(displayDurationMs)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n本次消耗额度: ${creditCost}${speedWarning}`;
 
-                    const enoughSongListen = localListenedMs >= requiredListenMs;
+                    const enoughSongListen = displayListenedMs >= requiredListenMs;
                     const songFinished = (cur >= dur - 2000 || (state === 'stop' && cur > 0))
                         && enoughSongListen
                         && suspiciousJumps <= 1
@@ -588,7 +802,8 @@
                     if (songFinished) {
                         finished = true;
                         clearInterval(monitorTimer);
-                        const result = await finishCurrentJob(jobId, localListenedMs, cur, dur);
+                        try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
+                        const result = await finishCurrentJob(jobId, displayListenedMs, cur, dur);
                         if (result && result.participant) updateParticipantInfo(result.participant);
                         setTimeout(playNext, 2000);
                     }
