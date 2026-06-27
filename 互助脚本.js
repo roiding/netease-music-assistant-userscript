@@ -605,7 +605,7 @@
             : '';
         if (!isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}\n已帮别人: ${participant.completed_help_count || 0} 次\n累计收到互助: ${participant.received_help_count || 0} 次${monthlyLine ? `\n${monthlyLine}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}${monthlyLine ? `\n${monthlyLine}` : ''}`;
         }
     }
 
