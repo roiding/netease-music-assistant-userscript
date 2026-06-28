@@ -447,6 +447,33 @@
         if (logoutLink) logoutLink.style.display = token ? 'block' : 'none';
     }
 
+    function handleClaimFailure(result) {
+        const payload = result && result.payload ? result.payload : null;
+        const status = Number(result && result.status || 0);
+        if (payload && (
+            payload.error === 'service_paused'
+            || payload.error === 'service_d1_blocked'
+            || payload.error === 'service_manual_blocked'
+        )) {
+            handleServicePaused(payload);
+            return;
+        }
+        if (payload && payload.error) {
+            handleAccessError(payload.error);
+            return;
+        }
+        const message = status === 0 ? '服务器连接失败，请稍后重试。' : '登录失败，请稍后重试。';
+        GM_setValue(ERROR_KEY, '');
+        stopHelper();
+        const loginStatus = document.getElementById('login-status');
+        const helperInfo = document.getElementById('helper-info');
+        if (loginStatus) loginStatus.innerText = message;
+        if (helperInfo) {
+            helperInfo.style.display = 'block';
+            helperInfo.innerText = message;
+        }
+    }
+
     function showUpgradeRequired(requiredVersion, latestVersion) {
         upgradeRequired = true;
         stopHelper();
@@ -582,6 +609,8 @@
 
     function initUI() {
         const token = GM_getValue(TOKEN_KEY, '');
+        const params = new URLSearchParams(window.location.search);
+        const hasPendingAuthRedirect = params.has('music_helper_ticket') || params.has('music_helper_error');
         const savedType = GM_getValue('myMusicType', 'song');
         const container = document.createElement('div');
         container.id = 'music-helper-container';
@@ -638,6 +667,7 @@
         drag(container, document.getElementById('helper-toggle-btn'));
 
         document.getElementById('login-linuxdo').onclick = async () => {
+            GM_setValue(ERROR_KEY, '');
             if(!authConfig) await fetchConfig();
             if(authConfig && authConfig.loginUrl) window.location.href = authConfig.loginUrl;
         };
@@ -656,7 +686,7 @@
         fetchConfig();
         if (token && ensureSingleTabLock()) refreshMe();
         const lastError = GM_getValue(ERROR_KEY, '');
-        if (lastError) {
+        if (lastError && !hasPendingAuthRedirect) {
             if (lastError === 'service_paused' || lastError === 'service_d1_blocked' || lastError === 'service_manual_blocked') {
                 handleServicePaused();
             } else if (lastError === 'tab_conflict') {
@@ -835,17 +865,17 @@
                 const d = safeJSON(res.responseText);
                 if (res.status === 403 && d && d.error === 'client_upgrade_required') {
                     showUpgradeRequired(d.minSupportedVersion, d.latestVersion);
-                    r(false);
+                    r({ ok: false, status: res.status, payload: d });
                     return;
                 }
-                if(storeSessionToken(d)){
-                    r(true);
+                if (res.status === 200 && storeSessionToken(d)) {
+                    r({ ok: true, status: res.status, payload: d });
                 } else {
-                    r(false);
+                    r({ ok: false, status: res.status, payload: d });
                 }
             },
-            onerror:()=>r(false),
-            ontimeout:()=>r(false)
+            onerror:()=>r({ ok: false, status: 0, payload: null }),
+            ontimeout:()=>r({ ok: false, status: 0, payload: null })
         }));
     }
 
@@ -1022,6 +1052,8 @@
 
                 mismatchTicks = 0;
 
+                const playbackRate = getPlaybackRate();
+                const playbackRateInvalid = state === 'play' && playbackRate > 1.05;
                 const listenCeilingMs = Math.max(expectedDurationMs || 0, dur || 0);
 
                 if (prevTickAt > 0) {
@@ -1031,8 +1063,9 @@
                         const progressDelta = cur - prevCur;
                         if (progressDelta > allowedProgress) {
                             suspiciousJumps += 1;
-                        } else {
-                            localListenedMs = Math.max(localListenedMs, cur);
+                        } else if (state === 'play' && !playbackRateInvalid) {
+                            const validListenDelta = Math.max(0, Math.min(wallDelta, progressDelta));
+                            localListenedMs += validListenDelta;
                         }
                     } else if (prevCur - cur > 15000) {
                         suspiciousJumps += 1;
@@ -1043,9 +1076,6 @@
                     localListenedMs = Math.min(localListenedMs, listenCeilingMs);
                 }
 
-                const playbackRate = getPlaybackRate();
-                const playbackRateInvalid = state === 'play' && playbackRate > 1.05;
-
                 if (!hasTriggered && elapsed > 5000 && state !== 'play') hasTriggered = triggerIframePlay();
                 if (dur > 0) {
                     document.getElementById('manual-btn').style.display = 'none';
@@ -1054,7 +1084,7 @@
                     const speedWarning = playbackRateInvalid ? '\n检测到倍速播放，请恢复 1x 后继续' : '';
                     const displayDurationMs = expectedDurationMs > 0 ? expectedDurationMs : dur;
                     const displayListenedMs = displayDurationMs > 0 ? Math.min(localListenedMs, displayDurationMs) : localListenedMs;
-                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n进度: ${formatTime(cur)} / ${formatTime(displayDurationMs)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n本次消耗额度: ${creditCost}${speedWarning}`;
+                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n歌曲时长: ${formatTime(displayDurationMs)}\n当前进度: ${formatTime(cur)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n本次完成可得额度: ${creditCost}${speedWarning}`;
 
                     const enoughSongListen = displayListenedMs >= requiredListenMs;
                     const songFinished = (cur >= dur - 2000 || (state === 'stop' && cur > 0))
@@ -1105,9 +1135,10 @@
         const ticket = params.get('music_helper_ticket');
         const loginError = params.get('music_helper_error');
         if (ticket) {
-            const claimed = await claimTicket(ticket);
+            GM_setValue(ERROR_KEY, '');
+            const claimResult = await claimTicket(ticket);
             cleanLoginParams();
-            if (claimed) {
+            if (claimResult && claimResult.ok) {
                 const authSection = document.getElementById('auth-section');
                 const helperForm = document.getElementById('helper-form');
                 const logoutLink = document.getElementById('logout-link');
@@ -1115,6 +1146,8 @@
                 if (helperForm) helperForm.style.display = 'block';
                 if (logoutLink) logoutLink.style.display = 'block';
                 await refreshMe();
+            } else {
+                handleClaimFailure(claimResult);
             }
         } else if (loginError) {
             GM_setValue(ERROR_KEY, loginError);
