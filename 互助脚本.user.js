@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.3.3
-// @description  V3.3.3：检测到普通新版本时也显示可点击的更新按钮，和强制升级按钮分开处理。
+// @version      3.3.4
+// @description  V3.3.4：切换为无状态 token，并收紧后台在线统计口径。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,11 +22,15 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.3.3';
+    const CURRENT_VERSION = '3.3.4';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
+    const ACCESS_EXPIRES_AT_KEY = 'musicHelperAccessExpiresAt';
+    const REFRESH_EXPIRES_AT_KEY = 'musicHelperRefreshExpiresAt';
     const ERROR_KEY = 'musicHelperLastError';
+    const JOIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+    const TOKEN_REFRESH_SKEW_MS = 5000;
 
     let isHelperRunning = false;
     let monitorTimer = null;
@@ -35,6 +39,7 @@
     let isDragging = false;
     let activeJoinState = null;
     let upgradeRequired = false;
+    let refreshPromise = null;
 
     function safeJSON(text) { try { return JSON.parse(text); } catch (e) { return null; } }
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
@@ -282,9 +287,7 @@
     function handleAccessError(code) {
         const text = getErrorText(code);
         stopHelper();
-        GM_setValue(TOKEN_KEY, '');
-        GM_setValue(LEGACY_TOKEN_KEY, '');
-        GM_setValue(ERROR_KEY, code || 'unknown');
+        clearStoredToken(code || 'unknown');
         const loginStatus = document.getElementById('login-status');
         const helperInfo = document.getElementById('helper-info');
         const authSection = document.getElementById('auth-section');
@@ -496,9 +499,8 @@
         };
         document.getElementById('update-script-btn').onclick = () => { window.location.href = getUpdateUrl(); };
         document.getElementById('logout-link').onclick = async () => {
-            await callAPI('POST', '/auth/logout');
-            GM_setValue(TOKEN_KEY, '');
-            GM_setValue(LEGACY_TOKEN_KEY, '');
+            await requestAPI('POST', '/auth/logout');
+            clearStoredToken('');
             location.reload();
         };
         document.getElementById('toggle-helper').onclick = toggleHelper;
@@ -538,36 +540,119 @@
         }));
     }
 
-    async function callAPI(method, path, body = null) {
+    function clearStoredToken(errorCode = '') {
+        GM_setValue(TOKEN_KEY, '');
+        GM_setValue(LEGACY_TOKEN_KEY, '');
+        GM_setValue(ACCESS_EXPIRES_AT_KEY, '');
+        GM_setValue(REFRESH_EXPIRES_AT_KEY, '');
+        GM_setValue(ERROR_KEY, errorCode || '');
+    }
+
+    function storeSessionToken(payload) {
+        if (!payload || !payload.token) return false;
+        GM_setValue(TOKEN_KEY, payload.token);
+        GM_setValue(LEGACY_TOKEN_KEY, '');
+        GM_setValue(ACCESS_EXPIRES_AT_KEY, String(payload.access_expires_at || ''));
+        GM_setValue(REFRESH_EXPIRES_AT_KEY, String(payload.refresh_expires_at || ''));
+        GM_setValue(ERROR_KEY, '');
+        return true;
+    }
+
+    function parseStoredTime(key) {
+        const raw = String(GM_getValue(key, '') || '').trim();
+        if (!raw) return 0;
+        const unixMs = Date.parse(raw);
+        return Number.isFinite(unixMs) ? unixMs : 0;
+    }
+
+    function tokenNeedsRefresh(force = false) {
         const token = GM_getValue(TOKEN_KEY, '');
+        if (!token) return false;
+        if (force) return true;
+        const now = Date.now();
+        const expiresAt = parseStoredTime(ACCESS_EXPIRES_AT_KEY);
+        return expiresAt > 0 && now >= expiresAt - TOKEN_REFRESH_SKEW_MS;
+    }
+
+    async function requestAPI(method, path, body = null, token = GM_getValue(TOKEN_KEY, '')) {
         return new Promise(r => GM_xmlhttpRequest({
             method, url:`${API_BASE}${path}`, headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json','X-Music-Helper-Version': CURRENT_VERSION},
             data: body?JSON.stringify(body):null,
-            onload: res=>{
-                const payload = safeJSON(res.responseText);
-                if(res.status===401){
-                    GM_setValue(TOKEN_KEY,'');
-                    GM_setValue(LEGACY_TOKEN_KEY,'');
-                    GM_setValue(ERROR_KEY, payload && payload.error ? payload.error : 'invalid_or_expired_token');
-                    location.reload();
-                    return;
-                }
-                if(res.status===403){
-                    if (payload && payload.error === 'client_upgrade_required') {
-                        showUpgradeRequired(payload.minSupportedVersion, payload.latestVersion);
-                        r(payload);
-                        return;
-                    }
-                    handleAccessError(payload && payload.error ? payload.error : 'forbidden');
-                    r(payload);
-                    return;
-                }
-                GM_setValue(ERROR_KEY, '');
-                r(payload);
-            },
-            onerror:()=>r(null),
-            ontimeout:()=>r(null)
+            onload: res => r({ status: res.status, payload: safeJSON(res.responseText) }),
+            onerror:()=>r({ status: 0, payload: null }),
+            ontimeout:()=>r({ status: 0, payload: null })
         }));
+    }
+
+    async function refreshAccessToken(force = false) {
+        const token = GM_getValue(TOKEN_KEY, '');
+        if (!token) return false;
+        const refreshExpiresAt = parseStoredTime(REFRESH_EXPIRES_AT_KEY);
+        if (refreshExpiresAt > 0 && Date.now() >= refreshExpiresAt - TOKEN_REFRESH_SKEW_MS) {
+            clearStoredToken('invalid_or_expired_token');
+            location.reload();
+            return false;
+        }
+        if (!force && !tokenNeedsRefresh()) return true;
+        if (refreshPromise) return refreshPromise;
+
+        refreshPromise = (async () => {
+            const result = await requestAPI('POST', '/auth/refresh', { token }, '');
+            if (result.status === 200 && result.payload && result.payload.token) {
+                storeSessionToken(result.payload);
+                return true;
+            }
+            if (result.status === 403) {
+                handleAccessError(result.payload && result.payload.error ? result.payload.error : 'forbidden');
+                return false;
+            }
+            clearStoredToken(result.payload && result.payload.error ? result.payload.error : 'invalid_or_expired_token');
+            location.reload();
+            return false;
+        })();
+
+        try {
+            return await refreshPromise;
+        } finally {
+            refreshPromise = null;
+        }
+    }
+
+    async function ensureFreshToken() {
+        if (!tokenNeedsRefresh()) return true;
+        return refreshAccessToken(true);
+    }
+
+    async function callAPI(method, path, body = null, allowRefreshRetry = true) {
+        if (!await ensureFreshToken()) return null;
+        const token = GM_getValue(TOKEN_KEY, '');
+        const result = await requestAPI(method, path, body, token);
+        const payload = result.payload;
+        if(result.status===401){
+            if (allowRefreshRetry && token && payload && payload.error === 'token_expired') {
+                const refreshed = await refreshAccessToken(true);
+                if (refreshed) {
+                    return callAPI(method, path, body, false);
+                }
+                return null;
+            }
+            clearStoredToken(payload && payload.error ? payload.error : 'invalid_or_expired_token');
+            location.reload();
+            return null;
+        }
+        if(result.status===403){
+            if (payload && payload.error === 'client_upgrade_required') {
+                showUpgradeRequired(payload.minSupportedVersion, payload.latestVersion);
+                return payload;
+            }
+            handleAccessError(payload && payload.error ? payload.error : 'forbidden');
+            return payload;
+        }
+        if (result.status === 0) {
+            return null;
+        }
+        GM_setValue(ERROR_KEY, '');
+        return payload;
     }
 
     async function claimTicket(ticket) {
@@ -583,9 +668,7 @@
                     r(false);
                     return;
                 }
-                if(d && d.access_token){
-                    GM_setValue(TOKEN_KEY,d.access_token);
-                    GM_setValue(LEGACY_TOKEN_KEY,'');
+                if(storeSessionToken(d)){
                     r(true);
                 } else {
                     r(false);
@@ -661,7 +744,7 @@
 
         joinTimer = setInterval(() => {
             if (activeJoinState) joinSelf(activeJoinState);
-        }, 60000);
+        }, JOIN_REFRESH_INTERVAL_MS);
         playNext();
     }
 
