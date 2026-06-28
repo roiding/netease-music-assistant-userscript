@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.3.5
-// @description  V3.3.5：新增停服时段，并限制单账号刷新链路与单标签运行。
+// @version      3.3.6
+// @description  V3.3.6：优化服务暂停与互助失败提示，优先显示后端返回原因。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.3.5';
+    const CURRENT_VERSION = '3.3.6';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
@@ -381,14 +381,27 @@
         if (code === 'token_session_conflict') return '当前账号已在其他设备重新登录，当前页面登录态已失效。';
         if (code === 'tab_conflict') return '当前账号已经在另一个标签页运行，本页已停止服务。';
         if (code === 'client_upgrade_required') return '当前脚本版本过旧，请先更新到最新版本后再继续使用。';
-        if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停服务，请 8:00 后再试。';
+        if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停互助，请 8:00 后再试。';
         if (code === 'service_d1_blocked') return 'D1 额度已触发保护阈值，服务已临时自动断流，请北京时间 8:00 后再试。';
         if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
         return code ? `发生错误：${code}` : '';
     }
 
-    function handleAccessError(code) {
-        const text = getErrorText(code);
+    function getPayloadErrorText(payload, fallbackCode = '') {
+        const errorCode = (payload && payload.error) || fallbackCode;
+        return (payload && payload.message) || getErrorText(errorCode) || '访问受限';
+    }
+
+    function isApiErrorPayload(payload) {
+        return !!(payload && typeof payload === 'object' && payload.error);
+    }
+
+    function isServicePauseError(code) {
+        return code === 'service_paused' || code === 'service_d1_blocked' || code === 'service_manual_blocked';
+    }
+
+    function handleAccessError(code, messageOverride = '') {
+        const text = messageOverride || getErrorText(code);
         stopHelper();
         clearStoredToken(code || 'unknown');
         const loginStatus = document.getElementById('login-status');
@@ -459,7 +472,7 @@
             return;
         }
         if (payload && payload.error) {
-            handleAccessError(payload.error);
+            handleAccessError(payload.error, payload.message || '');
             return;
         }
         const message = status === 0 ? '服务器连接失败，请稍后重试。' : '登录失败，请稍后重试。';
@@ -794,7 +807,10 @@
                 return false;
             }
             if (result.status === 403) {
-                handleAccessError(result.payload && result.payload.error ? result.payload.error : 'forbidden');
+                handleAccessError(
+                    result.payload && result.payload.error ? result.payload.error : 'forbidden',
+                    result.payload && result.payload.message ? result.payload.message : '',
+                );
                 return false;
             }
             clearStoredToken(result.payload && result.payload.error ? result.payload.error : 'invalid_or_expired_token');
@@ -837,7 +853,10 @@
                 showUpgradeRequired(payload.minSupportedVersion, payload.latestVersion);
                 return payload;
             }
-            handleAccessError(payload && payload.error ? payload.error : 'forbidden');
+            handleAccessError(
+                payload && payload.error ? payload.error : 'forbidden',
+                payload && payload.message ? payload.message : '',
+            );
             return payload;
         }
         if (result.status === 503 && payload && (
@@ -941,6 +960,17 @@
             document.getElementById('helper-info').innerText = '服务器连接失败，未能加入互助队列';
             return;
         }
+        if (!joined.ok) {
+            stopHelper();
+            if (isApiErrorPayload(joined)) {
+                if (!isServicePauseError(joined.error)) {
+                    document.getElementById('helper-info').innerText = getPayloadErrorText(joined, 'join_failed');
+                }
+            } else {
+                document.getElementById('helper-info').innerText = '服务器连接失败，未能加入互助队列';
+            }
+            return;
+        }
 
         joinTimer = setInterval(() => {
             if (activeJoinState) joinSelf(activeJoinState);
@@ -958,7 +988,7 @@
         const d = await callAPI('POST', '/join', payload);
         if(d && d.loginUser) document.getElementById('login-status').innerText = `已登录: ${d.loginUser}`;
         if(d && d.participant) updateParticipantInfo(d.participant);
-        return !!(d && d.ok);
+        return d;
     }
 
     async function finishCurrentJob(jobId, playedMs, positionMs, durationMs) {
@@ -972,6 +1002,12 @@
         const infoEl = document.getElementById('helper-info');
         const data = await callAPI('GET', '/next');
         if(!data) { infoEl.innerText = '服务器连接失败'; return; }
+        if (isApiErrorPayload(data)) {
+            if (!isServicePauseError(data.error)) {
+                infoEl.innerText = getPayloadErrorText(data, 'next_failed');
+            }
+            return;
+        }
         if (data.participant) updateParticipantInfo(data.participant);
 
         if (data.musicId) {
