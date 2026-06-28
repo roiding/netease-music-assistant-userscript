@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.3.4
-// @description  V3.3.4：切换为无状态 token，并收紧后台在线统计口径。
+// @version      3.3.5
+// @description  V3.3.5：新增停服时段，并限制单账号刷新链路与单标签运行。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,15 +22,19 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.3.4';
+    const CURRENT_VERSION = '3.3.5';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ACCESS_EXPIRES_AT_KEY = 'musicHelperAccessExpiresAt';
     const REFRESH_EXPIRES_AT_KEY = 'musicHelperRefreshExpiresAt';
     const ERROR_KEY = 'musicHelperLastError';
+    const TAB_LOCK_KEY = 'musicHelperActiveTabLock';
+    const TAB_ID_KEY = 'musicHelperTabId';
     const JOIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
     const TOKEN_REFRESH_SKEW_MS = 5000;
+    const TAB_LOCK_HEARTBEAT_MS = 5000;
+    const TAB_LOCK_STALE_MS = 15000;
 
     let isHelperRunning = false;
     let monitorTimer = null;
@@ -40,10 +44,104 @@
     let activeJoinState = null;
     let upgradeRequired = false;
     let refreshPromise = null;
+    let tabLockTimer = null;
+    let tabLockOwned = false;
+
+    const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
     function safeJSON(text) { try { return JSON.parse(text); } catch (e) { return null; } }
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
     function getSafePlayer() { try { const uw = getUnsafeWindow(); return window.player || uw.player || null; } catch(e) { return null; } }
+
+    function createLocalInstanceId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+        return `tab_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function getOrCreateTabInstanceId() {
+        try {
+            const existing = sessionStorage.getItem(TAB_ID_KEY);
+            if (existing) return existing;
+            const created = createLocalInstanceId();
+            sessionStorage.setItem(TAB_ID_KEY, created);
+            return created;
+        } catch (e) {
+            return createLocalInstanceId();
+        }
+    }
+
+    function readTabLock() {
+        try {
+            const raw = localStorage.getItem(TAB_LOCK_KEY);
+            return raw ? safeJSON(raw) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function isTabLockStale(lock) {
+        const updatedAt = Number(lock && lock.updatedAt || 0);
+        return !updatedAt || Date.now() - updatedAt > TAB_LOCK_STALE_MS;
+    }
+
+    function writeTabLock() {
+        try {
+            localStorage.setItem(TAB_LOCK_KEY, JSON.stringify({
+                id: TAB_INSTANCE_ID,
+                updatedAt: Date.now(),
+            }));
+        } catch (e) {}
+    }
+
+    function releaseTabLock() {
+        if (tabLockTimer) {
+            clearInterval(tabLockTimer);
+            tabLockTimer = null;
+        }
+        try {
+            const lock = readTabLock();
+            if (lock && lock.id === TAB_INSTANCE_ID) {
+                localStorage.removeItem(TAB_LOCK_KEY);
+            }
+        } catch (e) {}
+        tabLockOwned = false;
+    }
+
+    function tryAcquireTabLock() {
+        const current = readTabLock();
+        if (!current || current.id === TAB_INSTANCE_ID || isTabLockStale(current)) {
+            writeTabLock();
+            const confirmed = readTabLock();
+            tabLockOwned = !!(confirmed && confirmed.id === TAB_INSTANCE_ID);
+            return tabLockOwned;
+        }
+        tabLockOwned = false;
+        return false;
+    }
+
+    function startTabLockHeartbeat() {
+        if (!tryAcquireTabLock()) return false;
+        if (tabLockTimer) clearInterval(tabLockTimer);
+        tabLockTimer = setInterval(() => {
+            if (!tryAcquireTabLock()) {
+                releaseTabLock();
+                handleTabConflict();
+            }
+        }, TAB_LOCK_HEARTBEAT_MS);
+        return true;
+    }
+
+    function ensureSingleTabLock() {
+        const token = GM_getValue(TOKEN_KEY, '');
+        if (!token) {
+            releaseTabLock();
+            return true;
+        }
+        if (tabLockOwned && tryAcquireTabLock()) return true;
+        if (startTabLockHeartbeat()) return true;
+        handleTabConflict();
+        return false;
+    }
 
     function triggerIframePlay() {
         try {
@@ -280,7 +378,10 @@
         if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
         if (code === 'registration_required') return '当前账号尚未完成注册，请先完成开通流程。';
         if (code === 'invalid_or_expired_token') return '登录态已失效，请重新登录。';
+        if (code === 'token_session_conflict') return '当前账号已在其他设备重新登录，当前页面登录态已失效。';
+        if (code === 'tab_conflict') return '当前账号已经在另一个标签页运行，本页已停止服务。';
         if (code === 'client_upgrade_required') return '当前脚本版本过旧，请先更新到最新版本后再继续使用。';
+        if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停服务，请 8:00 后再试。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -301,6 +402,46 @@
         if (authSection) authSection.style.display = 'block';
         if (helperForm) helperForm.style.display = 'none';
         if (logoutLink) logoutLink.style.display = 'none';
+    }
+
+    function handleTabConflict() {
+        stopHelper();
+        GM_setValue(ERROR_KEY, 'tab_conflict');
+        const text = getErrorText('tab_conflict');
+        const token = GM_getValue(TOKEN_KEY, '');
+        const loginStatus = document.getElementById('login-status');
+        const helperInfo = document.getElementById('helper-info');
+        const authSection = document.getElementById('auth-section');
+        const helperForm = document.getElementById('helper-form');
+        const logoutLink = document.getElementById('logout-link');
+        if (loginStatus) loginStatus.innerText = token ? `已登录，${text}` : text;
+        if (helperInfo) {
+            helperInfo.style.display = 'block';
+            helperInfo.innerText = text;
+        }
+        if (authSection) authSection.style.display = token ? 'none' : 'block';
+        if (helperForm) helperForm.style.display = token ? 'block' : 'none';
+        if (logoutLink) logoutLink.style.display = token ? 'block' : 'none';
+    }
+
+    function handleServicePaused(payload = null) {
+        const text = (payload && payload.message) || getErrorText('service_paused');
+        stopHelper();
+        GM_setValue(ERROR_KEY, 'service_paused');
+        const token = GM_getValue(TOKEN_KEY, '');
+        const loginStatus = document.getElementById('login-status');
+        const helperInfo = document.getElementById('helper-info');
+        const authSection = document.getElementById('auth-section');
+        const helperForm = document.getElementById('helper-form');
+        const logoutLink = document.getElementById('logout-link');
+        if (loginStatus) loginStatus.innerText = token ? `已登录，${text}` : text;
+        if (helperInfo) {
+            helperInfo.style.display = 'block';
+            helperInfo.innerText = text;
+        }
+        if (authSection) authSection.style.display = token ? 'none' : 'block';
+        if (helperForm) helperForm.style.display = token ? 'block' : 'none';
+        if (logoutLink) logoutLink.style.display = token ? 'block' : 'none';
     }
 
     function showUpgradeRequired(requiredVersion, latestVersion) {
@@ -500,6 +641,7 @@
         document.getElementById('update-script-btn').onclick = () => { window.location.href = getUpdateUrl(); };
         document.getElementById('logout-link').onclick = async () => {
             await requestAPI('POST', '/auth/logout');
+            releaseTabLock();
             clearStoredToken('');
             location.reload();
         };
@@ -509,10 +651,16 @@
         document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; } };
 
         fetchConfig();
-        if (token) refreshMe();
+        if (token && ensureSingleTabLock()) refreshMe();
         const lastError = GM_getValue(ERROR_KEY, '');
         if (lastError) {
-            handleAccessError(lastError);
+            if (lastError === 'service_paused') {
+                handleServicePaused();
+            } else if (lastError === 'tab_conflict') {
+                handleTabConflict();
+            } else {
+                handleAccessError(lastError);
+            }
         }
     }
 
@@ -541,6 +689,7 @@
     }
 
     function clearStoredToken(errorCode = '') {
+        releaseTabLock();
         GM_setValue(TOKEN_KEY, '');
         GM_setValue(LEGACY_TOKEN_KEY, '');
         GM_setValue(ACCESS_EXPIRES_AT_KEY, '');
@@ -555,6 +704,7 @@
         GM_setValue(ACCESS_EXPIRES_AT_KEY, String(payload.access_expires_at || ''));
         GM_setValue(REFRESH_EXPIRES_AT_KEY, String(payload.refresh_expires_at || ''));
         GM_setValue(ERROR_KEY, '');
+        startTabLockHeartbeat();
         return true;
     }
 
@@ -602,6 +752,10 @@
                 storeSessionToken(result.payload);
                 return true;
             }
+            if (result.status === 503 && result.payload && result.payload.error === 'service_paused') {
+                handleServicePaused(result.payload);
+                return false;
+            }
             if (result.status === 403) {
                 handleAccessError(result.payload && result.payload.error ? result.payload.error : 'forbidden');
                 return false;
@@ -619,6 +773,7 @@
     }
 
     async function ensureFreshToken() {
+        if (!ensureSingleTabLock()) return false;
         if (!tokenNeedsRefresh()) return true;
         return refreshAccessToken(true);
     }
@@ -646,6 +801,10 @@
                 return payload;
             }
             handleAccessError(payload && payload.error ? payload.error : 'forbidden');
+            return payload;
+        }
+        if (result.status === 503 && payload && payload.error === 'service_paused') {
+            handleServicePaused(payload);
             return payload;
         }
         if (result.status === 0) {
@@ -922,6 +1081,15 @@
 
     setTimeout(async () => {
         initUI();
+        window.addEventListener('storage', (event) => {
+            if (event.key !== TAB_LOCK_KEY) return;
+            const lock = readTabLock();
+            if (lock && lock.id !== TAB_INSTANCE_ID && GM_getValue(TOKEN_KEY, '')) {
+                releaseTabLock();
+                handleTabConflict();
+            }
+        });
+        window.addEventListener('beforeunload', () => releaseTabLock());
         const params = new URLSearchParams(window.location.search);
         const ticket = params.get('music_helper_ticket');
         const loginError = params.get('music_helper_error');
