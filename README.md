@@ -35,6 +35,25 @@ new versions from the `.user.js` distribution URL. The in-panel "更新脚本"
 button also points to that `.user.js` install link so Tampermonkey can open the
 update/install dialog directly.
 
+## Release Notes
+
+Whenever the frontend is released:
+
+1. Update both script files:
+   - `互助脚本.js`
+   - `互助脚本.user.js`
+2. Keep the script version aligned with backend `USERSCRIPT_LATEST_VERSION`.
+3. Push the frontend repository.
+4. Purge jsDelivr cache for both distribution paths:
+   ```bash
+   curl -X GET 'https://purge.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js'
+   curl -X GET 'https://purge.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.js'
+   ```
+5. Confirm jsDelivr is serving the new header:
+   ```bash
+   curl -sS 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js' | sed -n '1,8p'
+   ```
+
 From `v3.2.1` onward, the script also sends its version to the Worker so the
 backend can show a stronger in-panel upgrade prompt when you raise the minimum
 supported version.
