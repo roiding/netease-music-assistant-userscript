@@ -382,6 +382,8 @@
         if (code === 'tab_conflict') return '当前账号已经在另一个标签页运行，本页已停止服务。';
         if (code === 'client_upgrade_required') return '当前脚本版本过旧，请先更新到最新版本后再继续使用。';
         if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停服务，请 8:00 后再试。';
+        if (code === 'service_d1_blocked') return 'D1 额度已触发保护阈值，服务已临时自动断流，请北京时间 8:00 后再试。';
+        if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -425,9 +427,10 @@
     }
 
     function handleServicePaused(payload = null) {
-        const text = (payload && payload.message) || getErrorText('service_paused');
+        const errorCode = (payload && payload.error) || 'service_paused';
+        const text = (payload && payload.message) || getErrorText(errorCode);
         stopHelper();
-        GM_setValue(ERROR_KEY, 'service_paused');
+        GM_setValue(ERROR_KEY, errorCode);
         const token = GM_getValue(TOKEN_KEY, '');
         const loginStatus = document.getElementById('login-status');
         const helperInfo = document.getElementById('helper-info');
@@ -654,7 +657,7 @@
         if (token && ensureSingleTabLock()) refreshMe();
         const lastError = GM_getValue(ERROR_KEY, '');
         if (lastError) {
-            if (lastError === 'service_paused') {
+            if (lastError === 'service_paused' || lastError === 'service_d1_blocked' || lastError === 'service_manual_blocked') {
                 handleServicePaused();
             } else if (lastError === 'tab_conflict') {
                 handleTabConflict();
@@ -752,7 +755,11 @@
                 storeSessionToken(result.payload);
                 return true;
             }
-            if (result.status === 503 && result.payload && result.payload.error === 'service_paused') {
+            if (result.status === 503 && result.payload && (
+                result.payload.error === 'service_paused'
+                || result.payload.error === 'service_d1_blocked'
+                || result.payload.error === 'service_manual_blocked'
+            )) {
                 handleServicePaused(result.payload);
                 return false;
             }
@@ -803,7 +810,11 @@
             handleAccessError(payload && payload.error ? payload.error : 'forbidden');
             return payload;
         }
-        if (result.status === 503 && payload && payload.error === 'service_paused') {
+        if (result.status === 503 && payload && (
+            payload.error === 'service_paused'
+            || payload.error === 'service_d1_blocked'
+            || payload.error === 'service_manual_blocked'
+        )) {
             handleServicePaused(payload);
             return payload;
         }
