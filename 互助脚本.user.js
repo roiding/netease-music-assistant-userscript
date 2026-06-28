@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.3.6
-// @description  V3.3.6：优化服务暂停与互助失败提示，优先显示后端返回原因。
+// @version      3.3.7
+// @description  V3.3.7：修复软更新按钮在登录态下不可见的问题。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.3.6';
+    const CURRENT_VERSION = '3.3.7';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
@@ -370,9 +370,15 @@
 
     function showUpdateButton(label = '更新脚本') {
         const updateButton = document.getElementById('update-script-btn');
-        if (!updateButton) return;
-        updateButton.innerText = label;
-        updateButton.style.display = 'block';
+        const headerUpdateLink = document.getElementById('header-update-link');
+        if (updateButton) {
+            updateButton.innerText = label;
+            updateButton.style.display = 'block';
+        }
+        if (headerUpdateLink) {
+            headerUpdateLink.innerText = label;
+            headerUpdateLink.style.display = 'block';
+        }
     }
     function getErrorText(code) {
         if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
@@ -633,6 +639,7 @@
                 <div id="helper-header">
                     <span>🎵 互助面板 (${CURRENT_VERSION})</span>
                     <div style="display:flex; align-items:center; gap:8px;">
+                        <a id="header-update-link" style="display:none; font-size:10px; color:#d33; cursor:pointer;">更新脚本</a>
                         <a id="logout-link" style="font-size:10px; color:#999; display:${token ? 'block' : 'none'}">退出</a>
                         <span id="min-btn" style="cursor:pointer; color:#999;">—</span>
                     </div>
@@ -685,6 +692,7 @@
             if(authConfig && authConfig.loginUrl) window.location.href = authConfig.loginUrl;
         };
         document.getElementById('update-script-btn').onclick = () => { window.location.href = getUpdateUrl(); };
+        document.getElementById('header-update-link').onclick = () => { window.location.href = getUpdateUrl(); };
         document.getElementById('logout-link').onclick = async () => {
             await requestAPI('POST', '/auth/logout');
             releaseTabLock();
