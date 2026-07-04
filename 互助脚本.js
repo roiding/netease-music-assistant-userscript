@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.0
-// @description  V3.4.0：优化互助公平性、坏歌误判和播放列表清理，降低串歌与任务偏斜问题。
+// @version      3.4.1
+// @description  V3.4.1：补充短于 30 秒歌曲的互助限制与更明确的提示文案。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.0';
+    const CURRENT_VERSION = '3.4.1';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const TOKEN_KEY = 'musicHelperToken';
