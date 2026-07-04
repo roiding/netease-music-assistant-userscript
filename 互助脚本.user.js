@@ -24,6 +24,7 @@
     const API_BASE = 'https://netease.ran-ding.gq/api';
     const CURRENT_VERSION = '3.4.0';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
+    const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ACCESS_EXPIRES_AT_KEY = 'musicHelperAccessExpiresAt';
@@ -576,6 +577,7 @@
             if (!song) return { durationMs: 0, issue: { code: 'song_not_found' } };
             const durationMs = Number(song && (song.dt || song.duration || 0));
             if (!Number.isFinite(durationMs) || durationMs <= 0) return { durationMs: 0, issue: { code: 'song_not_found' } };
+            if (durationMs < MIN_HELP_TRACK_DURATION_MS) return { durationMs: 0, issue: { code: 'song_too_short' } };
             const blocked = !!(song.noCopyrightRcmd
                 || (typeof song.resourceState === 'boolean' && song.resourceState === false)
                 || (Number(song.st) < 0)
@@ -613,7 +615,7 @@
                         || Number(privilege && privilege.st) < 0
                         || Number(privilege && privilege.freeTrialPrivilege && privilege.freeTrialPrivilege.cannotListenReason) > 0
                         || !!(privilege && privilege.message);
-                    if (!/^\d+$/.test(id) || !Number.isFinite(durationMs) || durationMs <= 0 || blocked) {
+                    if (!/^\d+$/.test(id) || !Number.isFinite(durationMs) || durationMs < MIN_HELP_TRACK_DURATION_MS || blocked) {
                         return null;
                     }
                     return { id, durationMs: Math.floor(durationMs) };
