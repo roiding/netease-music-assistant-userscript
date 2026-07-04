@@ -4,9 +4,9 @@ Tampermonkey userscript for Netease Music mutual playback.
 
 ## Install
 
-- GitHub: [netease-music-assistant-userscript](https://github.com/roiding/netease-music-assistant-userscript)
-- Direct install:
-  [互助脚本.user.js](https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js)
+- Greasy Fork: `https://greasyfork.org/scripts/584818`
+- Direct install after publishing:
+  `https://update.greasyfork.org/scripts/584818/%E7%BD%91%E6%98%93%E4%BA%91%E9%9F%B3%E4%B9%90%E4%BA%92%E5%8A%A9%E6%92%AD%E6%94%BE%E8%84%9A%E6%9C%AC.user.js`
 
 ## Configure
 
@@ -30,29 +30,24 @@ track metadata so the backend can randomly assign one concrete song and reserve
 credits by that song's duration. Older records without metadata still fall back
 to the userscript-side album parsing logic.
 
-`互助脚本.user.js` is the canonical source file. `互助脚本.js` is kept as a
-legacy mirror path and should always be synced from the `.user.js` file.
+`互助脚本.user.js` is the only distributed userscript source file.
 
-Tampermonkey will use the `@downloadURL` and `@updateURL` metadata to check for
-new versions from the `.user.js` distribution URL. The in-panel "更新脚本"
-button also points to that `.user.js` install link so Tampermonkey can open the
-update/install dialog directly.
+The script is distributed through Greasy Fork. Do not add GitHub/jsDelivr
+metadata URLs to the userscript header; Greasy Fork should be the install origin.
+The in-panel "更新脚本" button receives its URL from the Worker
+`GREASYFORK_SCRIPT_ID` / `USERSCRIPT_UPDATE_URL` configuration.
 
 ## Release Notes
 
 Whenever the frontend is released:
 
-1. Edit `互助脚本.user.js`, then sync the mirror file `互助脚本.js`.
-2. Keep the script version aligned with backend `USERSCRIPT_LATEST_VERSION`.
-3. Push the frontend repository.
-4. Purge jsDelivr cache for both distribution paths:
+1. Edit `互助脚本.user.js`.
+2. Push the frontend repository so the configured webhook triggers Greasy Fork.
+3. Keep the script version aligned with backend `USERSCRIPT_LATEST_VERSION`.
+4. Keep backend `GREASYFORK_SCRIPT_ID` set to `584818`.
+5. Verify the Greasy Fork install URL serves the new header:
    ```bash
-   curl -X GET 'https://purge.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js'
-   curl -X GET 'https://purge.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.js'
-   ```
-5. Confirm jsDelivr is serving the new header:
-   ```bash
-   curl -sS 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js' | sed -n '1,8p'
+   curl -sS 'https://update.greasyfork.org/scripts/584818/%E7%BD%91%E6%98%93%E4%BA%91%E9%9F%B3%E4%B9%90%E4%BA%92%E5%8A%A9%E6%92%AD%E6%94%BE%E8%84%9A%E6%9C%AC.user.js' | sed -n '1,8p'
    ```
 
 From `v3.2.1` onward, the script also sends its version to the Worker so the

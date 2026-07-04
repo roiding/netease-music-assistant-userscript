@@ -1,13 +1,10 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.1
-// @description  V3.4.1：补充短于 30 秒歌曲的互助限制与更明确的提示文案。
-// @author       roiding
-// @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
-// @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
-// @downloadURL  https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js
-// @updateURL    https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js
+// @version      3.4.2
+// @description  V3.4.2：补充动态渲染转义与安全边界加固。
+// @author       Netease Music Helper
+// @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -22,8 +19,8 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.1';
-    const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
+    const CURRENT_VERSION = '3.4.2';
+    const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
@@ -392,6 +389,15 @@
     function getUpdateUrl() {
         return (authConfig && authConfig.updateUrl) || UPDATE_FALLBACK_URL;
     }
+    function escapeHtml(value) {
+        return String(value || '').replace(/[&<>"']/g, (char) => {
+            if (char === '&') return '&amp;';
+            if (char === '<') return '&lt;';
+            if (char === '>') return '&gt;';
+            if (char.charCodeAt(0) === 34) return '&quot;';
+            return '&#39;';
+        });
+    }
 
     function showUpdateButton(label = '更新脚本') {
         const updateButton = document.getElementById('update-script-btn');
@@ -724,7 +730,7 @@
                                 <option value="song" ${savedType === 'song' ? 'selected' : ''}>单曲</option>
                                 <option value="album" ${savedType === 'album' ? 'selected' : ''}>专辑</option>
                             </select>
-                            <input type="text" id="my-music-id" placeholder="输入 ID" style="flex:1; padding:4px; border:1px solid #ccc; border-radius:0 4px 4px 0;" value="${GM_getValue('myMusicId', '')}">
+                            <input type="text" id="my-music-id" placeholder="输入 ID" style="flex:1; padding:4px; border:1px solid #ccc; border-radius:0 4px 4px 0;" value="${escapeHtml(GM_getValue('myMusicId', ''))}">
                         </div>
                         <button id="toggle-helper" style="width:100%; padding:8px; background:#d33; color:#fff; border:none; border-radius:4px; cursor:pointer;">开启互助</button>
                     </div>
@@ -795,7 +801,10 @@
                 const d = safeJSON(res.responseText);
                 if(d && d.latestVersion && compareVersions(d.latestVersion, CURRENT_VERSION) > 0) {
                     const up = document.createElement('div');
-                    up.innerHTML = `<div style="background:#fffbe6; border:1px solid #ffe58f; padding:8px; border-radius:4px; margin-bottom:8px; font-size:11px; color:#856404;">发现新版本 v${d.latestVersion}</div>`;
+                    const banner = document.createElement('div');
+                    banner.style.cssText = 'background:#fffbe6; border:1px solid #ffe58f; padding:8px; border-radius:4px; margin-bottom:8px; font-size:11px; color:#856404;';
+                    banner.textContent = `发现新版本 v${d.latestVersion}`;
+                    up.appendChild(banner);
                     document.getElementById('helper-body').prepend(up);
                     showUpdateButton(`更新到 v${d.latestVersion}`);
                 }
