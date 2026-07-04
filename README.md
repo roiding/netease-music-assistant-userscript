@@ -10,7 +10,7 @@ Tampermonkey userscript for Netease Music mutual playback.
 
 ## Configure
 
-Deploy the backend first, then update `API_BASE` in `互助脚本.js`:
+Deploy the backend first, then update `API_BASE` in `互助脚本.user.js`:
 
 ```js
 const API_BASE = 'https://YOUR_WORKER_DOMAIN/api';
@@ -30,6 +30,9 @@ track metadata so the backend can randomly assign one concrete song and reserve
 credits by that song's duration. Older records without metadata still fall back
 to the userscript-side album parsing logic.
 
+`互助脚本.user.js` is the canonical source file. `互助脚本.js` is kept as a
+legacy mirror path and should always be synced from the `.user.js` file.
+
 Tampermonkey will use the `@downloadURL` and `@updateURL` metadata to check for
 new versions from the `.user.js` distribution URL. The in-panel "更新脚本"
 button also points to that `.user.js` install link so Tampermonkey can open the
@@ -39,9 +42,7 @@ update/install dialog directly.
 
 Whenever the frontend is released:
 
-1. Update both script files:
-   - `互助脚本.js`
-   - `互助脚本.user.js`
+1. Edit `互助脚本.user.js`, then sync the mirror file `互助脚本.js`.
 2. Keep the script version aligned with backend `USERSCRIPT_LATEST_VERSION`.
 3. Push the frontend repository.
 4. Purge jsDelivr cache for both distribution paths:

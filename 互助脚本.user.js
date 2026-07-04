@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.3.8
-// @description  V3.3.8：新增坏歌/坏专辑运行时上报，自动忽略不可播放目标并在下次开启互助时提示。
+// @version      3.4.0
+// @description  V3.4.0：优化互助公平性、坏歌误判和播放列表清理，降低串歌与任务偏斜问题。
 // @author       roiding
 // @homepageURL  https://github.com/roiding/netease-music-assistant-userscript
 // @supportURL   https://github.com/roiding/netease-music-assistant-userscript/issues
@@ -22,7 +22,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.3.8';
+    const CURRENT_VERSION = '3.4.0';
     const UPDATE_FALLBACK_URL = 'https://cdn.jsdelivr.net/gh/roiding/netease-music-assistant-userscript@main/%E4%BA%92%E5%8A%A9%E8%84%9A%E6%9C%AC.user.js';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
@@ -291,12 +291,17 @@
         return { ok: false, reason: 'play_timeout' };
     }
 
-    async function clearPlayQueueBestEffort() {
+    async function clearPlayQueueBestEffort(targetSongId = '') {
         await ensurePlaybarExpanded();
         const panelBtn = document.querySelector('.m-playbar a[data-action="panel"]');
         if (!panelBtn) return false;
         const queueCount = getQueueCount();
-        if (queueCount <= 1) return false;
+        const currentPlayingSongId = getCurrentPlayingSongId();
+        const shouldForceClearSingle =
+            !!targetSongId &&
+            !!currentPlayingSongId &&
+            currentPlayingSongId !== String(targetSongId);
+        if (queueCount <= 0 && !shouldForceClearSingle) return false;
 
         const clearKeywords = ['清空', '清除', '删除全部', '清空列表', 'Clear'];
         const selectors = [
@@ -333,7 +338,17 @@
         try {
             let state = await openQueuePanelBestEffort();
             let clearBtn = state && state.clearButton ? state.clearButton : findClearButton();
-            if (!clearBtn) return false;
+            if (!clearBtn) {
+                if (shouldForceClearSingle) {
+                    try {
+                        const player = getSafePlayer();
+                        if (player && typeof player.stop === 'function') {
+                            player.stop();
+                        }
+                    } catch (e) {}
+                }
+                return false;
+            }
 
             clearBtn.click();
             await wait(500);
@@ -396,6 +411,7 @@
         if (code === 'token_session_conflict') return '当前账号已在其他设备重新登录，当前页面登录态已失效。';
         if (code === 'tab_conflict') return '当前账号已经在另一个标签页运行，本页已停止服务。';
         if (code === 'client_upgrade_required') return '当前脚本版本过旧，请先更新到最新版本后再继续使用。';
+        if (code === 'missing_played_ms') return '播放器没有返回有效播放时长，本次任务会稍后重试。';
         if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停互助，请 8:00 后再试。';
         if (code === 'service_d1_blocked') return 'D1 额度已触发保护阈值，服务已临时自动断流，请北京时间 8:00 后再试。';
         if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
@@ -1106,7 +1122,7 @@
             const expectedSongId = String(id);
             ensureTargetSong(expectedSongId);
             await wait(600);
-            await clearPlayQueueBestEffort();
+            await clearPlayQueueBestEffort(expectedSongId);
             const forcePlayed = await forcePlayTargetSong(expectedSongId);
             if (!forcePlayed || !forcePlayed.ok) {
                 const issueReason = forcePlayed && forcePlayed.reason ? forcePlayed.reason : 'play_timeout';
