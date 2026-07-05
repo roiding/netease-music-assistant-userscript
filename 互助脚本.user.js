@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.3
-// @description  V3.4.3：补充运行时 404/不可播上报，异常歌曲会被后端核验并移出互助池。
+// @version      3.4.4
+// @description  V3.4.4：月限封顶且额度过高时暂停接新任务，避免 credit 被单账号持续吸走。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -19,7 +19,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.3';
+    const CURRENT_VERSION = '3.4.4';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const TOKEN_KEY = 'musicHelperToken';
@@ -423,6 +423,7 @@
         if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停互助，请 8:00 后再试。';
         if (code === 'service_d1_blocked') return 'D1 额度已触发保护阈值，服务已临时自动断流，请北京时间 8:00 后再试。';
         if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
+        if (code === 'helper_credit_held') return '你本月已达到被互助上限，且当前额度已达到留存上限，本月暂不再给你派发新的互助任务。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -1049,10 +1050,13 @@
         const monthlyLine = monthlyLimit > 0
             ? `本月已收到: ${monthlyReceived} / ${monthlyLimit}${participant.monthly_cap_reached ? '（已封顶）' : ''}`
             : '';
+        const helperHoldLine = participant.helper_credit_hold_active
+            ? `当前额度留存上限: ${Number(participant.helper_credit_hold_limit || 0)}（本月暂停接新任务）`
+            : '';
         const noticeText = getParticipantNoticeText(participant);
         if (!isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}${monthlyLine ? `\n${monthlyLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}${monthlyLine ? `\n${monthlyLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -1154,6 +1158,15 @@
         const data = await callAPI('GET', '/next');
         if(!data) { infoEl.innerText = '服务器连接失败'; return; }
         if (isApiErrorPayload(data)) {
+            if (data.participant) updateParticipantInfo(data.participant);
+            if (data.error === 'helper_credit_held') {
+                const retryAfterSeconds = Math.max(300, Number(data.retryAfterSeconds || 1800));
+                infoEl.innerText = `${getPayloadErrorText(data, 'helper_credit_held')}\n${Math.ceil(retryAfterSeconds / 60)} 分钟后自动重试`;
+                setTimeout(() => {
+                    if (isHelperRunning) playNext();
+                }, retryAfterSeconds * 1000);
+                return;
+            }
             if (!isServicePauseError(data.error)) {
                 infoEl.innerText = getPayloadErrorText(data, 'next_failed');
             }
