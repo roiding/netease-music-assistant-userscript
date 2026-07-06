@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.4
-// @description  V3.4.4：月限封顶且额度过高时暂停接新任务，避免 credit 被单账号持续吸走。
+// @version      3.4.5
+// @description  V3.4.5：提交无效歌曲会立即失败停止，不再继续请求互助任务。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -19,7 +19,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.4';
+    const CURRENT_VERSION = '3.4.5';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const TOKEN_KEY = 'musicHelperToken';
@@ -419,12 +419,24 @@
         if (code === 'tab_conflict') return '当前账号已经在另一个标签页运行，本页已停止服务。';
         if (code === 'client_upgrade_required') return '当前脚本版本过旧，请先更新到最新版本后再继续使用。';
         if (code === 'song_too_short') return '当前歌曲时长不足 30 秒，不能用于互助。';
+        if (code === 'join_target_required') return '请先提交一首可用于互助的歌曲或专辑。';
         if (code === 'missing_played_ms') return '播放器没有返回有效播放时长，本次任务会稍后重试。';
         if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停互助，请 8:00 后再试。';
         if (code === 'service_d1_blocked') return 'D1 额度已触发保护阈值，服务已临时自动断流，请北京时间 8:00 后再试。';
         if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
         if (code === 'helper_credit_held') return '你本月已达到被互助上限，且当前额度已达到留存上限，本月暂不再给你派发新的互助任务。';
         return code ? `发生错误：${code}` : '';
+    }
+
+    function isJoinBlockingError(code) {
+        return [
+            'join_target_required',
+            'song_too_short',
+            'song_not_found',
+            'song_unplayable',
+            'album_not_found',
+            'album_no_playable_tracks',
+        ].includes(String(code || ''));
     }
 
     function getParticipantNoticeText(participant) {
@@ -1112,7 +1124,13 @@
         }
 
         joinTimer = setInterval(() => {
-            if (activeJoinState) joinSelf(activeJoinState);
+            if (!activeJoinState) return;
+            joinSelf(activeJoinState).then((joined) => {
+                if (joined && isApiErrorPayload(joined) && isJoinBlockingError(joined.error)) {
+                    stopHelper();
+                    document.getElementById('helper-info').innerText = getPayloadErrorText(joined, joined.error);
+                }
+            }).catch(() => {});
         }, JOIN_REFRESH_INTERVAL_MS);
         playNext();
     }
@@ -1165,6 +1183,11 @@
                 setTimeout(() => {
                     if (isHelperRunning) playNext();
                 }, retryAfterSeconds * 1000);
+                return;
+            }
+            if (isJoinBlockingError(data.error)) {
+                stopHelper();
+                infoEl.innerText = getPayloadErrorText(data, data.error);
                 return;
             }
             if (!isServicePauseError(data.error)) {
