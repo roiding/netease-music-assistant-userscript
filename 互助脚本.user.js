@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.5
-// @description  V3.4.5：提交无效歌曲会立即失败停止，不再继续请求互助任务。
+// @version      3.4.6
+// @description  V3.4.6：细化 /next 停派原因展示，并在额度过高时暂停接新任务。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -19,7 +19,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.5';
+    const CURRENT_VERSION = '3.4.6';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const TOKEN_KEY = 'musicHelperToken';
@@ -425,6 +425,12 @@
         if (code === 'service_d1_blocked') return 'D1 额度已触发保护阈值，服务已临时自动断流，请北京时间 8:00 后再试。';
         if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
         if (code === 'helper_credit_held') return '你本月已达到被互助上限，且当前额度已达到留存上限，本月暂不再给你派发新的互助任务。';
+        if (code === 'helper_credit_overflow') return '你的当前额度过高，系统暂时不会再给你派发新的互助任务。';
+        if (code === 'pool_empty') return '当前没有可用的互助目标。';
+        if (code === 'targets_out_of_credit') return '当前互助池里的目标额度已经耗尽。';
+        if (code === 'targets_busy') return '当前可用目标都已有进行中的互助任务。';
+        if (code === 'targets_monthly_capped') return '当前可用目标都已达到本月被互助上限。';
+        if (code === 'targets_temporarily_unavailable') return '当前没有可立即分配的互助任务。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -1065,10 +1071,13 @@
         const helperHoldLine = participant.helper_credit_hold_active
             ? `当前额度留存上限: ${Number(participant.helper_credit_hold_limit || 0)}（本月暂停接新任务）`
             : '';
+        const helperDispatchPauseLine = participant.helper_dispatch_credit_paused
+            ? `当前接任务额度上限: ${Number(participant.helper_dispatch_credit_limit || 0)}（已暂停接新任务）`
+            : '';
         const noticeText = getParticipantNoticeText(participant);
         if (!isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}${monthlyLine ? `\n${monthlyLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}${monthlyLine ? `\n${monthlyLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -1180,6 +1189,14 @@
             if (data.error === 'helper_credit_held') {
                 const retryAfterSeconds = Math.max(300, Number(data.retryAfterSeconds || 1800));
                 infoEl.innerText = `${getPayloadErrorText(data, 'helper_credit_held')}\n${Math.ceil(retryAfterSeconds / 60)} 分钟后自动重试`;
+                setTimeout(() => {
+                    if (isHelperRunning) playNext();
+                }, retryAfterSeconds * 1000);
+                return;
+            }
+            if (data.error === 'helper_credit_overflow') {
+                const retryAfterSeconds = Math.max(300, Number(data.retryAfterSeconds || 1800));
+                infoEl.innerText = `${getPayloadErrorText(data, 'helper_credit_overflow')}\n${Math.ceil(retryAfterSeconds / 60)} 分钟后自动重试`;
                 setTimeout(() => {
                     if (isHelperRunning) playNext();
                 }, retryAfterSeconds * 1000);
@@ -1351,7 +1368,8 @@
                 prevTickAt = now;
             }, 1000);
         } else {
-            infoEl.innerText = '暂无可互助目标，30s 后重试';
+            const noTaskText = data.message || getErrorText(data.reason || 'targets_temporarily_unavailable') || '暂无可互助目标';
+            infoEl.innerText = `${noTaskText}\n30s 后重试`;
             setTimeout(playNext, 30000);
         }
     }
