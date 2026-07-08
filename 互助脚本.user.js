@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.9
-// @description  V3.4.9：保留 Linux.do 探针页，便于排查画像同步请求。
+// @version      3.4.10
+// @description  V3.4.10：改用同域 callback 回传 Linux.do 画像，避免弹窗消息链失效。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.9';
+    const CURRENT_VERSION = '3.4.10';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -80,18 +80,20 @@
         if (params.get('music_helper_probe') !== '1') return;
         const probeToken = String(params.get('music_helper_probe_token') || '').trim();
         const username = String(params.get('music_helper_username') || '').trim();
-        const targetOrigin = String(params.get('music_helper_origin') || '*').trim() || '*';
+        const callbackUrl = String(params.get('music_helper_callback') || '').trim();
 
-        const sendResult = (payload) => {
+        const relayResult = (payload) => {
             try {
-                if (window.opener && !window.opener.closed) {
-                    window.opener.postMessage({
-                        source: LINUXDO_PROBE_SOURCE,
-                        probeToken,
-                        ...payload,
-                    }, targetOrigin);
-                }
+                window.name = JSON.stringify({
+                    source: LINUXDO_PROBE_SOURCE,
+                    probeToken,
+                    username,
+                    ...payload,
+                });
             } catch (error) {}
+            if (callbackUrl) {
+                window.location.href = callbackUrl;
+            }
         };
 
         const showStatus = (text) => {
@@ -101,8 +103,12 @@
         };
 
         if (!probeToken || !username) {
-            sendResult({ ok: false, errorMessage: 'Linux.do 同步参数不完整，请返回注册页刷新后重试。' });
+            relayResult({ ok: false, errorMessage: 'Linux.do 同步参数不完整，请返回注册页刷新后重试。' });
             showStatus('Linux.do 同步参数不完整，请返回注册页刷新后重试。');
+            return;
+        }
+        if (!callbackUrl) {
+            showStatus('缺少回传地址，请返回注册页刷新后重试。');
             return;
         }
 
@@ -116,7 +122,7 @@
             const rawText = await response.text();
             const payload = safeJSON(rawText);
             if (!response.ok || !payload || !payload.user) {
-                sendResult({
+                relayResult({
                     ok: false,
                     status: response.status,
                     contentType: response.headers.get('content-type') || '',
@@ -129,15 +135,14 @@
                 return;
             }
 
-            sendResult({
+            relayResult({
                 ok: true,
                 status: response.status,
                 contentType: response.headers.get('content-type') || '',
                 cardPayload: payload,
             });
-            showStatus('Linux.do 活跃度画像已同步，当前页面已保留，方便你检查网络请求和控制台。');
         } catch (error) {
-            sendResult({
+            relayResult({
                 ok: false,
                 errorMessage: 'Linux.do 活跃度画像读取失败：' + String(error && error.message || error || 'request_failed'),
             });
