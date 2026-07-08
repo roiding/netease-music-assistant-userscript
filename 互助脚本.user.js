@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.6
-// @description  V3.4.6：细化 /next 停派原因展示，并在额度过高时暂停接新任务。
+// @version      3.4.8
+// @description  V3.4.8：仅在指定 Linux.do 探针页同步注册画像，避免干扰日常浏览。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
+// @match        *://linux.do/latest*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -19,9 +20,10 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.6';
+    const CURRENT_VERSION = '3.4.8';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
+    const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ACCESS_EXPIRES_AT_KEY = 'musicHelperAccessExpiresAt';
@@ -51,6 +53,11 @@
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
     function getSafePlayer() { try { const uw = getUnsafeWindow(); return window.player || uw.player || null; } catch(e) { return null; } }
 
+    if (window.location.hostname === 'linux.do') {
+        handleLinuxDoProbePage();
+        return;
+    }
+
     function createLocalInstanceId() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
         return `tab_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -65,6 +72,79 @@
             return created;
         } catch (e) {
             return createLocalInstanceId();
+        }
+    }
+
+    async function handleLinuxDoProbePage() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('music_helper_probe') !== '1') return;
+        const probeToken = String(params.get('music_helper_probe_token') || '').trim();
+        const username = String(params.get('music_helper_username') || '').trim();
+        const targetOrigin = String(params.get('music_helper_origin') || '*').trim() || '*';
+
+        const sendResult = (payload) => {
+            try {
+                if (window.opener && !window.opener.closed) {
+                    window.opener.postMessage({
+                        source: LINUXDO_PROBE_SOURCE,
+                        probeToken,
+                        ...payload,
+                    }, targetOrigin);
+                }
+            } catch (error) {}
+        };
+
+        const showStatus = (text) => {
+            try {
+                document.body.innerHTML = '<div style="padding:24px;font:14px/1.6 sans-serif;color:#333;">' + String(text || '') + '</div>';
+            } catch (error) {}
+        };
+
+        if (!probeToken || !username) {
+            sendResult({ ok: false, errorMessage: 'Linux.do 同步参数不完整，请返回注册页刷新后重试。' });
+            showStatus('Linux.do 同步参数不完整，请返回注册页刷新后重试。');
+            return;
+        }
+
+        showStatus('正在读取 Linux.do 活跃度画像...');
+        try {
+            const response = await fetch(`/u/${encodeURIComponent(username)}/card.json`, {
+                method: 'GET',
+                credentials: 'include',
+                headers: { 'Accept': 'application/json' },
+            });
+            const rawText = await response.text();
+            const payload = safeJSON(rawText);
+            if (!response.ok || !payload || !payload.user) {
+                sendResult({
+                    ok: false,
+                    status: response.status,
+                    contentType: response.headers.get('content-type') || '',
+                    bodyPreview: String(rawText || '').slice(0, 300),
+                    errorMessage: response.status === 403
+                        ? 'Linux.do 当前拒绝了画像读取，请确认本浏览器已经登录 Linux.do。'
+                        : 'Linux.do 活跃度画像读取失败，请稍后重试。',
+                });
+                showStatus('Linux.do 活跃度画像读取失败，请返回注册页重试。');
+                return;
+            }
+
+            sendResult({
+                ok: true,
+                status: response.status,
+                contentType: response.headers.get('content-type') || '',
+                cardPayload: payload,
+            });
+            showStatus('Linux.do 活跃度画像已同步，正在返回注册页...');
+            setTimeout(() => {
+                try { window.close(); } catch (error) {}
+            }, 600);
+        } catch (error) {
+            sendResult({
+                ok: false,
+                errorMessage: 'Linux.do 活跃度画像读取失败：' + String(error && error.message || error || 'request_failed'),
+            });
+            showStatus('Linux.do 活跃度画像读取失败，请返回注册页重试。');
         }
     }
 
