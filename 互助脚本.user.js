@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.8
-// @description  V3.4.8：仅在指定 Linux.do 探针页同步注册画像，避免干扰日常浏览。
+// @version      3.4.9
+// @description  V3.4.9：保留 Linux.do 探针页，便于排查画像同步请求。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.8';
+    const CURRENT_VERSION = '3.4.9';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -135,10 +135,7 @@
                 contentType: response.headers.get('content-type') || '',
                 cardPayload: payload,
             });
-            showStatus('Linux.do 活跃度画像已同步，正在返回注册页...');
-            setTimeout(() => {
-                try { window.close(); } catch (error) {}
-            }, 600);
+            showStatus('Linux.do 活跃度画像已同步，当前页面已保留，方便你检查网络请求和控制台。');
         } catch (error) {
             sendResult({
                 ok: false,
