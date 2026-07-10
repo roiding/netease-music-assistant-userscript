@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.5.1
-// @description  V3.5.1：支持通过官方商户分发接口自动结算 rcredit 兑换。
+// @version      3.6.0
+// @description  V3.6.0：支持消费用户提交互助目标和充值，Helper 开通后再参与助力。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.5.1';
+    const CURRENT_VERSION = '3.6.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -47,6 +47,7 @@
     let tabLockTimer = null;
     let tabLockOwned = false;
     let economyState = null;
+    let currentUserState = null;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
@@ -513,6 +514,7 @@
     function getErrorText(code) {
         if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
         if (code === 'registration_required') return '当前账号尚未完成注册，请先完成开通流程。';
+        if (code === 'helper_registration_required') return '当前是消费用户；开通 Helper 后才能帮助他人并赚取 credit 或 rcredit。';
         if (code === 'invalid_or_expired_token') return '登录态已失效，请重新登录。';
         if (code === 'token_session_conflict') return '当前账号已在其他设备重新登录，当前页面登录态已失效。';
         if (code === 'tab_conflict') return '当前账号已经在另一个标签页运行，本页已停止服务。';
@@ -629,6 +631,33 @@
 
     function isServicePauseError(code) {
         return code === 'service_paused' || code === 'service_d1_blocked' || code === 'service_manual_blocked';
+    }
+
+    function isCurrentUserHelper() {
+        return !!(currentUserState && currentUserState.isRegistered);
+    }
+
+    function updatePrimaryAction() {
+        const toggleButton = document.getElementById('toggle-helper');
+        const registerButton = document.getElementById('helper-register-btn');
+        if (toggleButton && !isHelperRunning) {
+            toggleButton.innerText = isCurrentUserHelper() ? '开启互助' : '提交互助目标';
+            toggleButton.style.background = '#d33';
+        }
+        if (registerButton) {
+            registerButton.style.display = currentUserState && !isCurrentUserHelper() ? 'block' : 'none';
+        }
+    }
+
+    function handleHelperRegistrationRequired(payload = null) {
+        stopHelper();
+        if (currentUserState) currentUserState = { ...currentUserState, isRegistered: false };
+        updatePrimaryAction();
+        const infoEl = document.getElementById('helper-info');
+        if (infoEl) {
+            infoEl.style.display = 'block';
+            infoEl.innerText = getPayloadErrorText(payload, 'helper_registration_required');
+        }
     }
 
     function handleAccessError(code, messageOverride = '') {
@@ -911,6 +940,7 @@
                             <input type="text" id="my-music-id" placeholder="输入 ID" style="flex:1; padding:4px; border:1px solid #ccc; border-radius:0 4px 4px 0;" value="${escapeHtml(GM_getValue('myMusicId', ''))}">
                         </div>
                         <button id="toggle-helper" style="width:100%; padding:8px; background:#d33; color:#fff; border:none; border-radius:4px; cursor:pointer;">开启互助</button>
+                        <button id="helper-register-btn" style="display:none; width:100%; margin-top:6px; padding:7px; background:#0f766e; color:#fff; border:none; border-radius:4px; cursor:pointer;">开通 Helper</button>
                     </div>
                     <div id="wallet-actions" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid #eee;">
                         <div id="wallet-summary" style="font-size:11px; color:#666; margin-bottom:6px;"></div>
@@ -959,6 +989,7 @@
             location.reload();
         };
         document.getElementById('toggle-helper').onclick = toggleHelper;
+        document.getElementById('helper-register-btn').onclick = startHelperRegistration;
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
         document.getElementById('manual-btn').onclick = () => { triggerIframePlay(); document.getElementById('manual-btn').style.display='none'; };
@@ -1004,6 +1035,16 @@
             onerror:()=>r(null),
             ontimeout:()=>r(null)
         }));
+    }
+
+    async function startHelperRegistration() {
+        if (!authConfig) await fetchConfig();
+        const target = authConfig && authConfig.helperRegisterLoginUrl;
+        if (!target) {
+            alert('暂时无法读取 Helper 开通入口，请稍后重试。');
+            return;
+        }
+        window.location.href = target;
     }
 
     function clearStoredToken(errorCode = '') {
@@ -1125,6 +1166,10 @@
                 showUpgradeRequired(payload.minSupportedVersion, payload.latestVersion);
                 return payload;
             }
+            if (payload && payload.error === 'helper_registration_required') {
+                handleHelperRegistrationRequired(payload);
+                return payload;
+            }
             handleAccessError(
                 payload && payload.error ? payload.error : 'forbidden',
                 payload && payload.message ? payload.message : '',
@@ -1173,37 +1218,43 @@
     async function refreshMe() {
         const d = await callAPI('GET', '/me');
         if (d && d.user) {
-            document.getElementById('login-status').innerText = `已登录: ${d.user.displayName}`;
+            currentUserState = d.user;
+            const accountType = d.user.isRegistered ? 'Helper' : '消费用户';
+            document.getElementById('login-status').innerText = `已登录: ${d.user.displayName} · ${accountType}`;
             economyState = d.economy || null;
+            updatePrimaryAction();
             updateParticipantInfo(d.participant);
         }
     }
 
     function updateParticipantInfo(participant) {
-        if (!participant) return;
         const infoEl = document.getElementById('helper-info');
-        const credits = Number(participant.credits || 0);
-        const rcredits = Number(participant.rcredits || 0);
-        const reservedRcredits = Number(participant.reserved_rcredits || 0);
-        const monthlyReceived = Number(participant.monthly_received_help_count || 0);
-        const monthlyLimit = Number(participant.monthly_received_limit || 0);
+        const state = participant || {};
+        const credits = Number(state.credits || 0);
+        const rcredits = Number(state.rcredits || 0);
+        const reservedRcredits = Number(state.reserved_rcredits || 0);
+        const monthlyReceived = Number(state.monthly_received_help_count || 0);
+        const monthlyLimit = Number(state.monthly_received_limit || 0);
         const monthlyLine = monthlyLimit > 0
-            ? `本月已收到: ${monthlyReceived} / ${monthlyLimit}${participant.monthly_cap_reached ? '（已封顶）' : ''}`
+            ? `本月已收到: ${monthlyReceived} / ${monthlyLimit}${state.monthly_cap_reached ? '（已封顶）' : ''}`
             : '';
-        const helperHoldLine = participant.helper_credit_hold_active
-            ? `当前额度留存上限: ${Number(participant.helper_credit_hold_limit || 0)}（本月暂停接新任务）`
+        const helperHoldLine = state.helper_credit_hold_active
+            ? `当前额度留存上限: ${Number(state.helper_credit_hold_limit || 0)}（本月暂停接新任务）`
             : '';
-        const helperDispatchPauseLine = participant.helper_dispatch_credit_paused
-            ? `当前接任务额度上限: ${Number(participant.helper_dispatch_credit_limit || 0)}（已暂停接新任务）`
+        const helperDispatchPauseLine = state.helper_dispatch_credit_paused
+            ? `当前接任务额度上限: ${Number(state.helper_dispatch_credit_limit || 0)}（已暂停接新任务）`
             : '';
-        const rewardLine = participant.rcredit_reward_active
+        const rewardLine = state.rcredit_reward_active
             ? '本月已封顶：继续助力将赚取 rcredit'
             : '';
-        const noticeText = getParticipantNoticeText(participant);
-        updateWalletControls(participant);
-        if (!isHelperRunning) {
+        const consumerLine = currentUserState && !isCurrentUserHelper()
+            ? '消费用户可提交目标和充值 credit；开通 Helper 后才能助力他人并赚取奖励。'
+            : '';
+        const noticeText = getParticipantNoticeText(state);
+        updateWalletControls(state);
+        if (infoEl && !isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -1216,9 +1267,10 @@
         const topupEnabled = !!(economyState && economyState.topup && economyState.topup.enabled);
         const redemptionEnabled = !!(economyState && economyState.redemption && economyState.redemption.enabled);
         const rcredits = Number(participant && participant.rcredits || 0);
-        actions.style.display = (topupEnabled || redemptionEnabled || rcredits > 0) ? 'block' : 'none';
+        const canRedeem = isCurrentUserHelper() && redemptionEnabled;
+        actions.style.display = (topupEnabled || canRedeem || rcredits > 0) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
-        redeemButton.style.display = redemptionEnabled ? 'block' : 'none';
+        redeemButton.style.display = canRedeem ? 'block' : 'none';
         summary.innerText = `credit ${Number(participant && participant.credits || 0)} / rcredit ${rcredits}`;
     }
 
@@ -1297,10 +1349,18 @@
 
     async function toggleHelper() {
         if (upgradeRequired) return;
+        if (!currentUserState) {
+            await refreshMe();
+            if (!currentUserState) return;
+        }
         const mid = document.getElementById('my-music-id').value.trim();
         const mtp = document.getElementById('my-music-type').value;
         if(!mid) return;
         GM_setValue('myMusicId', mid); GM_setValue('myMusicType', mtp);
+        if (!isCurrentUserHelper()) {
+            await submitConsumerTarget(mid, mtp);
+            return;
+        }
         if(isHelperRunning) stopHelper(); else await startHelper(mid, mtp);
     }
 
@@ -1312,11 +1372,41 @@
         const toggleButton = document.getElementById('toggle-helper');
         const helperInfo = document.getElementById('helper-info');
         if (toggleButton) {
-            toggleButton.innerText = '开启互助';
+            toggleButton.innerText = isCurrentUserHelper() ? '开启互助' : '提交互助目标';
             toggleButton.style.background = '#d33';
         }
         if (helperInfo) {
             helperInfo.innerText = '已停止本机互助播放；已保存的 ID 仍会按剩余额度被其他人互助。';
+        }
+    }
+
+    async function submitConsumerTarget(mid, mtp) {
+        const toggleButton = document.getElementById('toggle-helper');
+        const infoEl = document.getElementById('helper-info');
+        if (toggleButton) toggleButton.disabled = true;
+        if (infoEl) {
+            infoEl.style.display = 'block';
+            infoEl.innerText = '正在提交互助目标...';
+        }
+        try {
+            const joined = await joinSelf({ mid, mtp, musicMeta: null, musicMetaFetchedAt: 0 });
+            if (!joined) {
+                if (infoEl) infoEl.innerText = '服务器连接失败，未能提交互助目标。';
+                return;
+            }
+            if (!joined.ok) {
+                if (infoEl && isApiErrorPayload(joined) && !isServicePauseError(joined.error)) {
+                    infoEl.innerText = getPayloadErrorText(joined, 'join_failed');
+                }
+                return;
+            }
+            if (infoEl) {
+                const credits = Number(joined.participant && joined.participant.credits || 0);
+                infoEl.innerText = `互助目标已保存。当前可被互助额度：${credits}。\n消费用户不会接收助力任务，也不会赚取 credit/rcredit。`;
+            }
+        } finally {
+            if (toggleButton) toggleButton.disabled = false;
+            updatePrimaryAction();
         }
     }
 
@@ -1371,7 +1461,13 @@
         if (state.musicMeta) payload.musicMeta = state.musicMeta;
         if (state.musicMeta && state.musicMeta.issue) payload.musicIssue = state.musicMeta.issue;
         const d = await callAPI('POST', '/join', payload);
-        if(d && d.loginUser) document.getElementById('login-status').innerText = `已登录: ${d.loginUser}`;
+        if (d && d.user) {
+            currentUserState = d.user;
+            updatePrimaryAction();
+        }
+        if(d && d.loginUser) {
+            document.getElementById('login-status').innerText = `已登录: ${d.loginUser} · ${isCurrentUserHelper() ? 'Helper' : '消费用户'}`;
+        }
         if(d && d.participant) updateParticipantInfo(d.participant);
         return d;
     }

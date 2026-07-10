@@ -22,8 +22,11 @@ The script runs on:
 *://music.163.com/*
 ```
 
-Linux.do OAuth is used only for the initial identity binding. After login, the
-script stores the Worker's own `musicHelperToken` with Tampermonkey storage.
+Linux.do OAuth binds the local account. After login, the script stores the
+Worker's own `musicHelperToken` with Tampermonkey storage. A consumer user may
+submit a target and recharge credit immediately; the separate "开通 Helper"
+action enables helping others and earning rewards through the existing payment
+or CDK flow.
 
 When a target is submitted as an album ID, the script will upload the album's
 track metadata so the backend can randomly assign one concrete song and reserve
