@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.0
-// @description  V3.7.0：支持 Helper 绑定收款应用，将 rcredit 兑换为 LDC。
+// @version      3.7.1
+// @description  V3.7.1：全新 Tab 面板，互助、钱包与账户分区展示。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.0';
+    const CURRENT_VERSION = '3.7.1';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -642,16 +642,47 @@
         return !!(currentUserState && currentUserState.isRegistered);
     }
 
+    function activateHelperTab(tabName, persist = true) {
+        const nextTab = ['help', 'wallet', 'account'].includes(tabName) ? tabName : 'help';
+        document.querySelectorAll('[data-helper-tab]').forEach((button) => {
+            const active = button.dataset.helperTab === nextTab;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        document.querySelectorAll('[data-helper-panel]').forEach((panel) => {
+            panel.classList.toggle('active', panel.dataset.helperPanel === nextTab);
+        });
+        if (persist) GM_setValue('musicHelperActiveTab', nextTab);
+    }
+
     function updatePrimaryAction() {
         const toggleButton = document.getElementById('toggle-helper');
         const registerButton = document.getElementById('helper-register-btn');
         if (toggleButton && !isHelperRunning) {
             toggleButton.innerText = isCurrentUserHelper() ? '开启互助' : '提交互助目标';
-            toggleButton.style.background = '#d33';
+            toggleButton.style.background = '';
         }
         if (registerButton) {
             registerButton.style.display = currentUserState && !isCurrentUserHelper() ? 'block' : 'none';
         }
+        updateAccountSummary();
+    }
+
+    function updateAccountSummary() {
+        const summary = document.getElementById('account-summary');
+        if (!summary) return;
+        if (!currentUserState) {
+            summary.innerText = '尚未读取到账户信息。';
+            return;
+        }
+        const accountType = isCurrentUserHelper() ? 'Helper' : '消费用户';
+        const permission = isCurrentUserHelper()
+            ? '可以提交目标、接取助力任务并赚取 credit / rcredit。'
+            : '可以提交目标和充值 credit；开通 Helper 后可接取助力任务。';
+        summary.innerHTML = `
+            <div class="helper-account-head"><strong>${escapeHtml(currentUserState.displayName)}</strong><span>${accountType}</span></div>
+            <p>${permission}</p>
+        `;
     }
 
     function handleHelperRegistrationRequired(payload = null) {
@@ -663,6 +694,7 @@
             infoEl.style.display = 'block';
             infoEl.innerText = getPayloadErrorText(payload, 'helper_registration_required');
         }
+        activateHelperTab('help');
     }
 
     function handleAccessError(code, messageOverride = '') {
@@ -679,9 +711,10 @@
             helperInfo.style.display = 'block';
             helperInfo.innerText = text || '访问受限';
         }
-        if (authSection) authSection.style.display = 'block';
+        if (authSection) authSection.style.display = 'grid';
         if (helperForm) helperForm.style.display = 'none';
         if (logoutLink) logoutLink.style.display = 'none';
+        activateHelperTab('help');
     }
 
     function handleTabConflict() {
@@ -699,9 +732,10 @@
             helperInfo.style.display = 'block';
             helperInfo.innerText = text;
         }
-        if (authSection) authSection.style.display = token ? 'none' : 'block';
+        if (authSection) authSection.style.display = token ? 'none' : 'grid';
         if (helperForm) helperForm.style.display = token ? 'block' : 'none';
         if (logoutLink) logoutLink.style.display = token ? 'block' : 'none';
+        activateHelperTab('help');
     }
 
     function handleServicePaused(payload = null) {
@@ -720,9 +754,10 @@
             helperInfo.style.display = 'block';
             helperInfo.innerText = text;
         }
-        if (authSection) authSection.style.display = token ? 'none' : 'block';
+        if (authSection) authSection.style.display = token ? 'none' : 'grid';
         if (helperForm) helperForm.style.display = token ? 'block' : 'none';
         if (logoutLink) logoutLink.style.display = token ? 'block' : 'none';
+        activateHelperTab('help');
     }
 
     function handleClaimFailure(result) {
@@ -774,7 +809,7 @@
             helperInfo.style.display = 'block';
             helperInfo.innerText = `${title}${detail ? `\n${detail}` : ''}\n点击下方按钮安装最新版脚本。`;
         }
-        if (authSection) authSection.style.display = 'block';
+        if (authSection) authSection.style.display = 'grid';
         if (helperForm) helperForm.style.display = 'none';
         if (loginButton) loginButton.style.display = 'none';
         if (updateButton) {
@@ -917,68 +952,239 @@
         const params = new URLSearchParams(window.location.search);
         const hasPendingAuthRedirect = params.has('music_helper_ticket') || params.has('music_helper_error') || params.has('music_helper_topup_order');
         const savedType = GM_getValue('myMusicType', 'song');
+        const savedTab = GM_getValue('musicHelperActiveTab', 'help');
         const container = document.createElement('div');
         container.id = 'music-helper-container';
         container.innerHTML = `
-            <div id="helper-toggle-btn">🎵</div>
+            <div id="helper-toggle-btn" title="打开互助面板">♪</div>
             <div id="music-helper-panel">
                 <div id="helper-header">
-                    <span>🎵 互助面板 (${CURRENT_VERSION})</span>
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <a id="header-update-link" style="display:none; font-size:10px; color:#d33; cursor:pointer;">更新脚本</a>
-                        <a id="logout-link" style="font-size:10px; color:#999; display:${token ? 'block' : 'none'}">退出</a>
-                        <span id="min-btn" style="cursor:pointer; color:#999;">—</span>
+                    <div class="helper-brand">
+                        <span class="helper-brand-mark">♪</span>
+                        <span><strong>网易云互助</strong><small>v${CURRENT_VERSION}</small></span>
+                    </div>
+                    <div class="helper-header-actions">
+                        <a id="header-update-link" class="helper-update-link" style="display:none;">更新</a>
+                        <button id="min-btn" class="helper-icon-btn" type="button" aria-label="最小化">—</button>
                     </div>
                 </div>
                 <div id="helper-body">
-                    <div id="login-status" style="font-size:12px; margin-bottom:8px; color:#666;">${token ? '检测登录中...' : '未登录'}</div>
-                    <div id="auth-section" style="${token ? 'display:none' : 'display:block'}">
-                        <button id="login-linuxdo" style="background:#000; color:#fff; width:100%; padding:8px; border:none; border-radius:4px; cursor:pointer;">登录 Linux.do</button>
-                        <button id="update-script-btn" style="display:none; margin-top:8px; background:#d33; color:#fff; width:100%; padding:8px; border:none; border-radius:4px; cursor:pointer;">更新脚本</button>
+                    <div id="login-status" class="helper-session-status">${token ? '正在读取账户...' : '登录后即可提交互助目标'}</div>
+                    <div id="auth-section" class="helper-auth-card" style="${token ? 'display:none' : 'display:grid'}">
+                        <div class="helper-auth-icon">LD</div>
+                        <div><strong>使用 Linux.do 账户</strong><p>登录后可提交目标、充值额度并查看钱包。</p></div>
+                        <button id="login-linuxdo" class="helper-btn helper-btn-dark" type="button">登录 Linux.do</button>
+                        <button id="update-script-btn" class="helper-btn helper-btn-danger" type="button" style="display:none;">更新脚本</button>
                     </div>
                     <div id="helper-form" style="${token ? 'display:block' : 'display:none'}">
-                        <div style="display:flex; margin-bottom:8px;">
-                            <select id="my-music-type" style="padding:4px; border:1px solid #ccc; border-radius:4px 0 0 4px; background:#f9f9f9;">
-                                <option value="song" ${savedType === 'song' ? 'selected' : ''}>单曲</option>
-                                <option value="album" ${savedType === 'album' ? 'selected' : ''}>专辑</option>
-                            </select>
-                            <input type="text" id="my-music-id" placeholder="输入 ID" style="flex:1; padding:4px; border:1px solid #ccc; border-radius:0 4px 4px 0;" value="${escapeHtml(GM_getValue('myMusicId', ''))}">
+                        <div class="helper-tabs" role="tablist" aria-label="互助面板功能">
+                            <button type="button" data-helper-tab="help" role="tab"><span>▶</span>互助</button>
+                            <button type="button" data-helper-tab="wallet" role="tab"><span>◈</span>钱包</button>
+                            <button type="button" data-helper-tab="account" role="tab"><span>●</span>账户</button>
                         </div>
-                        <button id="toggle-helper" style="width:100%; padding:8px; background:#d33; color:#fff; border:none; border-radius:4px; cursor:pointer;">开启互助</button>
-                        <button id="helper-register-btn" style="display:none; width:100%; margin-top:6px; padding:7px; background:#0f766e; color:#fff; border:none; border-radius:4px; cursor:pointer;">开通 Helper</button>
+
+                        <section class="helper-tab-panel" data-helper-panel="help" role="tabpanel">
+                            <div class="helper-section-heading"><strong>互助目标</strong><span>歌曲或专辑 ID</span></div>
+                            <div class="helper-target-row">
+                                <select id="my-music-type" aria-label="目标类型">
+                                    <option value="song" ${savedType === 'song' ? 'selected' : ''}>单曲</option>
+                                    <option value="album" ${savedType === 'album' ? 'selected' : ''}>专辑</option>
+                                </select>
+                                <input type="text" id="my-music-id" placeholder="输入网易云 ID" value="${escapeHtml(GM_getValue('myMusicId', ''))}">
+                            </div>
+                            <button id="toggle-helper" class="helper-btn helper-btn-primary" type="button">开启互助</button>
+                            <div id="helper-info" class="helper-status-card" style="display:none;">就绪...</div>
+                            <button id="manual-btn" class="helper-btn helper-btn-danger helper-manual-btn" type="button" style="display:none;">点我激活播放</button>
+                        </section>
+
+                        <section class="helper-tab-panel" data-helper-panel="wallet" role="tabpanel">
+                            <div class="helper-section-heading"><strong>我的钱包</strong><span>LDC 与互助额度</span></div>
+                            <div id="wallet-actions" style="display:none;">
+                                <div id="wallet-summary" class="helper-balance-grid"></div>
+                                <div class="helper-action-grid">
+                                    <button id="credit-topup-btn" class="helper-btn helper-btn-blue" type="button" style="display:none;">LDC 充值</button>
+                                    <button id="rcredit-redeem-btn" class="helper-btn helper-btn-purple" type="button" style="display:none;">兑换 LDC</button>
+                                </div>
+                            </div>
+                            <div id="merchant-credential-section" class="helper-merchant-card" style="display:none;">
+                                <div class="helper-card-title"><span>EasyPay 收款应用</span><span class="helper-lock-badge">一次绑定</span></div>
+                                <div id="merchant-credential-summary" class="helper-card-copy"></div>
+                                <div id="merchant-credential-form" class="helper-credential-form" style="display:none;">
+                                    <input id="merchant-pid-input" type="text" autocomplete="off" placeholder="EasyPay pid">
+                                    <input id="merchant-key-input" type="password" autocomplete="new-password" placeholder="EasyPay key">
+                                    <button id="merchant-bind-btn" class="helper-btn helper-btn-teal" type="button">绑定收款应用</button>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="helper-tab-panel" data-helper-panel="account" role="tabpanel">
+                            <div class="helper-section-heading"><strong>账户</strong><span>身份与权限</span></div>
+                            <div id="account-summary" class="helper-account-card">正在读取账户信息...</div>
+                            <button id="helper-register-btn" class="helper-btn helper-btn-teal" type="button" style="display:none;">开通 Helper</button>
+                            <button id="logout-link" class="helper-btn helper-btn-ghost" type="button" style="display:${token ? 'block' : 'none'}">退出当前账户</button>
+                        </section>
                     </div>
-                    <div id="wallet-actions" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid #eee;">
-                        <div id="wallet-summary" style="font-size:11px; color:#666; margin-bottom:6px;"></div>
-                        <div style="display:flex; gap:6px;">
-                            <button id="credit-topup-btn" style="display:none; flex:1; padding:6px; background:#1677ff; color:#fff; border:none; border-radius:4px; cursor:pointer;">LDC 充值</button>
-                            <button id="rcredit-redeem-btn" style="display:none; flex:1; padding:6px; background:#722ed1; color:#fff; border:none; border-radius:4px; cursor:pointer;">兑换 LDC</button>
-                        </div>
-                    </div>
-                    <div id="merchant-credential-section" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid #eee;">
-                        <div id="merchant-credential-summary" style="font-size:11px; color:#666; line-height:1.5;"></div>
-                        <div id="merchant-credential-form" style="display:none; margin-top:6px; gap:5px; flex-direction:column;">
-                            <input id="merchant-pid-input" type="text" autocomplete="off" placeholder="EasyPay pid" style="width:100%; box-sizing:border-box; padding:6px; border:1px solid #ccc; border-radius:4px;">
-                            <input id="merchant-key-input" type="password" autocomplete="new-password" placeholder="EasyPay key" style="width:100%; box-sizing:border-box; padding:6px; border:1px solid #ccc; border-radius:4px;">
-                            <button id="merchant-bind-btn" style="width:100%; padding:6px; background:#0f766e; color:#fff; border:none; border-radius:4px; cursor:pointer;">绑定收款应用</button>
-                        </div>
-                    </div>
-                    <div id="helper-info" style="display:none; white-space:pre-line; font-size:11px; margin-top:8px; padding:8px; border-radius:4px; background:#f0f7ff; border:1px solid #adc6ff; color:#1890ff; line-height:1.5;">就绪...</div>
-                    <button id="manual-btn" style="display:none; width:100%; margin-top:8px; background:#d33; color:#fff; border:none; padding:8px; border-radius:4px; cursor:pointer; animation: blink 1s infinite;">点我激活播放</button>
                 </div>
             </div>
         `;
         document.body.appendChild(container);
         GM_addStyle(`
-            #music-helper-container { position: fixed; top: 100px; right: 20px; z-index: 1000000; font-family: sans-serif; user-select: none; }
-            #music-helper-panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); width: 220px; }
-            #helper-header { background: #f5f5f5; padding: 10px; display: flex; justify-content: space-between; align-items: center; border-radius: 8px 8px 0 0; cursor: move; }
-            #helper-body { padding: 12px; }
-            #helper-toggle-btn { width: 44px; height: 44px; background: #d33; color: #fff; border-radius: 50%; display: none; align-items: center; justify-content: center; cursor: move; font-size: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+            #music-helper-container {
+                --mh-red: #e5484d;
+                --mh-red-dark: #c9363e;
+                --mh-ink: #202124;
+                --mh-muted: #777b82;
+                --mh-line: #e9e9ec;
+                --mh-soft: #f6f6f8;
+                position: fixed;
+                top: 92px;
+                right: 20px;
+                z-index: 1000000;
+                color: var(--mh-ink);
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+                font-size: 13px;
+                user-select: none;
+            }
+            #music-helper-container * { box-sizing: border-box; }
+            #music-helper-panel {
+                width: 310px;
+                overflow: hidden;
+                border: 1px solid rgba(25, 25, 28, 0.1);
+                border-radius: 16px;
+                background: rgba(255, 255, 255, 0.98);
+                box-shadow: 0 18px 55px rgba(22, 24, 29, 0.22), 0 2px 8px rgba(22, 24, 29, 0.08);
+                backdrop-filter: blur(18px);
+            }
+            #helper-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 13px 14px;
+                color: #fff;
+                background: linear-gradient(135deg, #d9363e 0%, #e95a55 58%, #ee765f 100%);
+                cursor: move;
+            }
+            .helper-brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+            .helper-brand-mark {
+                display: grid;
+                width: 30px;
+                height: 30px;
+                place-items: center;
+                border: 1px solid rgba(255,255,255,.34);
+                border-radius: 10px;
+                background: rgba(255,255,255,.15);
+                font-size: 17px;
+                font-weight: 800;
+            }
+            .helper-brand strong { display: block; font-size: 14px; line-height: 1.2; letter-spacing: .02em; }
+            .helper-brand small { display: block; margin-top: 2px; color: rgba(255,255,255,.72); font-size: 10px; font-weight: 500; }
+            .helper-header-actions { display: flex; align-items: center; gap: 7px; }
+            .helper-update-link { color: #fff; font-size: 11px; cursor: pointer; text-decoration: none; }
+            .helper-icon-btn {
+                display: grid;
+                width: 28px;
+                height: 28px;
+                padding: 0;
+                place-items: center;
+                border: 1px solid rgba(255,255,255,.28);
+                border-radius: 9px;
+                color: #fff;
+                background: rgba(255,255,255,.12);
+                cursor: pointer;
+            }
+            #helper-body { max-height: min(620px, calc(100vh - 130px)); overflow-y: auto; padding: 12px; }
+            .helper-session-status {
+                margin-bottom: 10px;
+                overflow: hidden;
+                color: var(--mh-muted);
+                font-size: 11px;
+                line-height: 1.4;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .helper-auth-card { gap: 10px; padding: 16px; border: 1px solid var(--mh-line); border-radius: 13px; background: linear-gradient(145deg, #fff, #fafafd); }
+            .helper-auth-card > div:nth-child(2) { min-width: 0; }
+            .helper-auth-card strong { font-size: 14px; }
+            .helper-auth-card p { margin: 4px 0 0; color: var(--mh-muted); font-size: 11px; line-height: 1.5; }
+            .helper-auth-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; color: #fff; background: #1e1f22; font-size: 12px; font-weight: 800; }
+            .helper-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 12px; padding: 4px; border-radius: 12px; background: var(--mh-soft); }
+            .helper-tabs button {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 5px;
+                padding: 8px 5px;
+                border: 0;
+                border-radius: 9px;
+                color: #74777d;
+                background: transparent;
+                font: inherit;
+                font-size: 12px;
+                cursor: pointer;
+            }
+            .helper-tabs button span { font-size: 9px; }
+            .helper-tabs button.active { color: var(--mh-red-dark); background: #fff; box-shadow: 0 2px 8px rgba(31,33,38,.08); font-weight: 700; }
+            .helper-tab-panel { display: none; gap: 10px; }
+            .helper-tab-panel.active { display: grid; }
+            .helper-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+            .helper-section-heading strong { font-size: 14px; }
+            .helper-section-heading span { color: var(--mh-muted); font-size: 10px; }
+            .helper-target-row { display: grid; grid-template-columns: 76px 1fr; }
+            .helper-target-row select, .helper-target-row input, .helper-credential-form input {
+                min-width: 0;
+                padding: 9px 10px;
+                border: 1px solid #dfe0e4;
+                color: var(--mh-ink);
+                background: #fff;
+                font: inherit;
+                outline: none;
+                user-select: text;
+            }
+            .helper-target-row select { border-radius: 10px 0 0 10px; background: #fafafd; }
+            .helper-target-row input { margin-left: -1px; border-radius: 0 10px 10px 0; }
+            .helper-target-row input:focus, .helper-credential-form input:focus { position: relative; border-color: rgba(229,72,77,.65); box-shadow: 0 0 0 3px rgba(229,72,77,.1); }
+            .helper-btn { width: 100%; padding: 9px 11px; border: 0; border-radius: 10px; color: #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; transition: transform .12s ease, filter .12s ease; }
+            .helper-btn:hover { filter: brightness(.97); }
+            .helper-btn:active { transform: translateY(1px); }
+            .helper-btn:disabled { cursor: wait; opacity: .58; }
+            .helper-btn-primary, .helper-btn-danger { background: linear-gradient(135deg, var(--mh-red-dark), var(--mh-red)); }
+            .helper-btn-dark { background: #202124; }
+            .helper-btn-blue { background: #2979e8; }
+            .helper-btn-purple { background: #7552c8; }
+            .helper-btn-teal { background: #128276; }
+            .helper-btn-ghost { color: #555960; border: 1px solid var(--mh-line); background: #fff; }
+            .helper-status-card { padding: 10px 11px; border: 1px solid #dbe8f7; border-radius: 11px; color: #27608e; background: #f4f9ff; white-space: pre-line; font-size: 11px; line-height: 1.55; }
+            .helper-manual-btn { animation: mh-pulse 1.4s ease-in-out infinite; }
+            .helper-balance-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+            .helper-balance-card { padding: 12px; border: 1px solid var(--mh-line); border-radius: 12px; background: linear-gradient(145deg, #fff, #f8f8fa); }
+            .helper-balance-card span { display: block; margin-bottom: 4px; color: var(--mh-muted); font-size: 10px; }
+            .helper-balance-card strong { display: block; font-size: 20px; line-height: 1.1; }
+            .helper-balance-card small { display: block; margin-top: 5px; color: #999ca2; font-size: 9px; }
+            .helper-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+            .helper-merchant-card, .helper-account-card { padding: 12px; border: 1px solid var(--mh-line); border-radius: 12px; background: #fafafd; }
+            .helper-card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
+            .helper-lock-badge { padding: 3px 6px; border-radius: 999px; color: #8a6218; background: #fff1cc; font-size: 9px; font-weight: 700; }
+            .helper-card-copy { margin-top: 7px; color: var(--mh-muted); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+            .helper-credential-form { gap: 7px; margin-top: 9px; flex-direction: column; }
+            .helper-credential-form input { width: 100%; border-radius: 9px; }
+            .helper-account-card { color: #555960; line-height: 1.6; white-space: pre-line; }
+            .helper-account-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+            .helper-account-head strong { color: var(--mh-ink); font-size: 14px; }
+            .helper-account-head span { padding: 3px 7px; border-radius: 999px; color: var(--mh-red-dark); background: #feecee; font-size: 9px; font-weight: 700; }
+            .helper-account-card p { margin: 8px 0 0; color: var(--mh-muted); font-size: 11px; line-height: 1.55; white-space: normal; }
+            #helper-toggle-btn { display: none; width: 48px; height: 48px; align-items: center; justify-content: center; border-radius: 16px; color: #fff; background: linear-gradient(135deg, #d9363e, #ed6b5d); cursor: move; font-size: 22px; font-weight: 800; box-shadow: 0 12px 28px rgba(207,52,61,.35); }
+            @keyframes mh-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(229,72,77,.12); } 50% { box-shadow: 0 0 0 5px rgba(229,72,77,.16); } }
+            @media (max-width: 480px) {
+                #music-helper-container { top: 64px; right: 12px; }
+                #music-helper-panel { width: calc(100vw - 24px); }
+                #helper-body { max-height: calc(100vh - 112px); }
+            }
         `);
 
         const drag = (el, h) => {
             let p1=0,p2=0,p3=0,p4=0;
             h.onmousedown = (e) => {
+                if (e.target.closest('a, button, input, select')) return;
                 isDragging=false; e.preventDefault(); p3=e.clientX; p4=e.clientY;
                 document.onmouseup=()=>{document.onmouseup=null;document.onmousemove=null;};
                 document.onmousemove=(e)=>{isDragging=true; p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY;
@@ -987,6 +1193,11 @@
         };
         drag(container, document.getElementById('helper-header'));
         drag(container, document.getElementById('helper-toggle-btn'));
+
+        document.querySelectorAll('[data-helper-tab]').forEach((button) => {
+            button.onclick = () => activateHelperTab(button.dataset.helperTab);
+        });
+        activateHelperTab(savedTab, false);
 
         document.getElementById('login-linuxdo').onclick = async () => {
             GM_setValue(ERROR_KEY, '');
@@ -1032,12 +1243,6 @@
             onload:res=>{
                 const d = safeJSON(res.responseText);
                 if(d && d.latestVersion && compareVersions(d.latestVersion, CURRENT_VERSION) > 0) {
-                    const up = document.createElement('div');
-                    const banner = document.createElement('div');
-                    banner.style.cssText = 'background:#fffbe6; border:1px solid #ffe58f; padding:8px; border-radius:4px; margin-bottom:8px; font-size:11px; color:#856404;';
-                    banner.textContent = `发现新版本 v${d.latestVersion}`;
-                    up.appendChild(banner);
-                    document.getElementById('helper-body').prepend(up);
                     showUpdateButton(`更新到 v${d.latestVersion}`);
                 }
                 authConfig = d;
@@ -1287,7 +1492,12 @@
         actions.style.display = (topupEnabled || canRedeem || rcredits > 0) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
         redeemButton.style.display = canRedeem ? 'block' : 'none';
-        summary.innerText = `credit ${Number(participant && participant.credits || 0)} / rcredit ${rcredits}`;
+        const credits = Number(participant && participant.credits || 0);
+        const reserved = Number(participant && participant.reserved_rcredits || 0);
+        summary.innerHTML = `
+            <div class="helper-balance-card"><span>credit</span><strong>${credits}</strong><small>用于获得互助</small></div>
+            <div class="helper-balance-card"><span>rcredit</span><strong>${rcredits}</strong><small>${reserved > 0 ? `冻结 ${reserved}` : '可兑换 LDC'}</small></div>
+        `;
     }
 
     function updateMerchantCredentialControls() {
@@ -1354,6 +1564,7 @@
         const config = economyState && economyState.redemption;
         if (!config || !config.enabled) return alert(getErrorText('rcredit_redemption_disabled'));
         if (!currentMerchantCredential || !currentMerchantCredential.bound) {
+            activateHelperTab('wallet');
             updateMerchantCredentialControls();
             return alert(getErrorText('merchant_credential_required'));
         }
@@ -1424,7 +1635,7 @@
         const helperInfo = document.getElementById('helper-info');
         if (toggleButton) {
             toggleButton.innerText = isCurrentUserHelper() ? '开启互助' : '提交互助目标';
-            toggleButton.style.background = '#d33';
+            toggleButton.style.background = '';
         }
         if (helperInfo) {
             helperInfo.innerText = '已停止本机互助播放；已保存的 ID 仍会按剩余额度被其他人互助。';
