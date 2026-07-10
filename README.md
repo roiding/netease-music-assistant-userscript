@@ -34,6 +34,9 @@ When the backend economy flags are enabled, the panel also shows LDC credit
 top-up and rcredit redemption controls. Users who have reached the monthly
 received-help cap can continue helping and receive rcredit instead of ordinary
 credit; disabled economy features remain hidden.
+When configured by the backend, rcredit redemption can be settled immediately
+through the official LDC merchant distribution API. Ambiguous results remain
+frozen for administrator reconciliation instead of being retried automatically.
 
 `互助脚本.user.js` is the only distributed userscript source file.
 

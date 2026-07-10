@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.5.0
-// @description  V3.5.0：增加 LDC 充值 credit、封顶后 rcredit 奖励及兑换申请入口。
+// @version      3.5.1
+// @description  V3.5.1：支持通过官方商户分发接口自动结算 rcredit 兑换。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.5.0';
+    const CURRENT_VERSION = '3.5.1';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -532,12 +532,15 @@
         if (code === 'targets_temporarily_unavailable') return '当前没有可立即分配的互助任务。';
         if (code === 'credit_topup_disabled') return 'LDC 充值 credit 暂未开放。';
         if (code === 'invalid_topup_amount') return '请输入有效的 LDC 充值金额。';
+        if (code === 'invalid_topup_amount_precision') return 'LDC 充值金额最多支持两位小数。';
         if (code === 'topup_amount_out_of_range') return '充值金额不在当前允许范围内。';
         if (code === 'rcredit_redemption_disabled') return 'rcredit 兑换 LDC 暂未开放。';
         if (code === 'redemption_amount_too_small') return '兑换的 rcredit 数量低于最低要求。';
         if (code === 'redemption_net_amount_too_small') return '扣除手续费后的 LDC 金额低于最低要求。';
         if (code === 'redemption_already_pending') return '你已有一笔待处理的兑换申请。';
         if (code === 'insufficient_rcredits') return '可用 rcredit 不足。';
+        if (code === 'ldc_distribution_disabled') return 'LDC 自动分发暂未开放。';
+        if (code === 'distribution_requires_reconciliation') return '上一笔 LDC 分发结果尚待人工核对，请勿重复提交。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -1251,13 +1254,22 @@
         if (!Number.isSafeInteger(amount) || amount <= 0) return alert(getErrorText('redemption_amount_too_small'));
         const gross = amount / Number(config.rcreditsPerLdc || 1);
         const fee = gross * Number(config.feeBps || 0) / 10000 + Number(config.fixedFeeLdc || 0);
-        const net = Math.max(0, gross - fee);
-        if (!window.confirm(`将冻结 ${amount} rcredit，预计实收 ${net.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')} LDC。兑换由管理员审核并转账，确认提交吗？`)) return;
+        const net = Math.floor(Math.max(0, gross - fee) * 100) / 100;
+        const settlementText = config.settlementMode === 'automatic'
+            ? '提交后将通过官方商户分发接口自动转账'
+            : '提交后进入管理员结算队列';
+        if (!window.confirm(`将冻结 ${amount} rcredit，预计实收 ${net.toFixed(2)} LDC。${settlementText}，确认提交吗？`)) return;
         const result = await callAPI('POST', '/wallet/redemptions', { rcredits: amount });
         if (!result || isApiErrorPayload(result)) {
             return alert(getPayloadErrorText(result, 'rcredit_redemption_failed'));
         }
-        alert(`兑换申请已提交，预计实收 ${result.redemption.netAmountLdc} LDC。`);
+        if (result.redemption.status === 'paid') {
+            alert(`兑换成功，${result.redemption.netAmountLdc} LDC 已通过商户分发到账。`);
+        } else if (result.redemption.distributionState === 'uncertain') {
+            alert('分发结果暂时无法确认，rcredit 仍保持冻结，管理员核对后会完成结算。');
+        } else {
+            alert(`兑换申请已提交，预计实收 ${result.redemption.netAmountLdc} LDC。`);
+        }
         await refreshMe();
     }
 
