@@ -30,6 +30,11 @@ track metadata so the backend can randomly assign one concrete song and reserve
 credits by that song's duration. Older records without metadata still fall back
 to the userscript-side album parsing logic.
 
+When the backend economy flags are enabled, the panel also shows LDC credit
+top-up and rcredit redemption controls. Users who have reached the monthly
+received-help cap can continue helping and receive rcredit instead of ordinary
+credit; disabled economy features remain hidden.
+
 `互助脚本.user.js` is the only distributed userscript source file.
 
 The script is distributed through Greasy Fork. Do not add GitHub/jsDelivr

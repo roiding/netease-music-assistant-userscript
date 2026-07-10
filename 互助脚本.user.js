@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.11
-// @description  V3.4.11：限制 Linux.do 画像回传地址，避免用户数据被转发到非服务域名。
+// @version      3.5.0
+// @description  V3.5.0：增加 LDC 充值 credit、封顶后 rcredit 奖励及兑换申请入口。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.11';
+    const CURRENT_VERSION = '3.5.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -46,6 +46,7 @@
     let refreshPromise = null;
     let tabLockTimer = null;
     let tabLockOwned = false;
+    let economyState = null;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
@@ -529,6 +530,14 @@
         if (code === 'targets_busy') return '当前可用目标都已有进行中的互助任务。';
         if (code === 'targets_monthly_capped') return '当前可用目标都已达到本月被互助上限。';
         if (code === 'targets_temporarily_unavailable') return '当前没有可立即分配的互助任务。';
+        if (code === 'credit_topup_disabled') return 'LDC 充值 credit 暂未开放。';
+        if (code === 'invalid_topup_amount') return '请输入有效的 LDC 充值金额。';
+        if (code === 'topup_amount_out_of_range') return '充值金额不在当前允许范围内。';
+        if (code === 'rcredit_redemption_disabled') return 'rcredit 兑换 LDC 暂未开放。';
+        if (code === 'redemption_amount_too_small') return '兑换的 rcredit 数量低于最低要求。';
+        if (code === 'redemption_net_amount_too_small') return '扣除手续费后的 LDC 金额低于最低要求。';
+        if (code === 'redemption_already_pending') return '你已有一笔待处理的兑换申请。';
+        if (code === 'insufficient_rcredits') return '可用 rcredit 不足。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -869,7 +878,7 @@
     function initUI() {
         const token = GM_getValue(TOKEN_KEY, '');
         const params = new URLSearchParams(window.location.search);
-        const hasPendingAuthRedirect = params.has('music_helper_ticket') || params.has('music_helper_error');
+        const hasPendingAuthRedirect = params.has('music_helper_ticket') || params.has('music_helper_error') || params.has('music_helper_topup_order');
         const savedType = GM_getValue('myMusicType', 'song');
         const container = document.createElement('div');
         container.id = 'music-helper-container';
@@ -899,6 +908,13 @@
                             <input type="text" id="my-music-id" placeholder="输入 ID" style="flex:1; padding:4px; border:1px solid #ccc; border-radius:0 4px 4px 0;" value="${escapeHtml(GM_getValue('myMusicId', ''))}">
                         </div>
                         <button id="toggle-helper" style="width:100%; padding:8px; background:#d33; color:#fff; border:none; border-radius:4px; cursor:pointer;">开启互助</button>
+                    </div>
+                    <div id="wallet-actions" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid #eee;">
+                        <div id="wallet-summary" style="font-size:11px; color:#666; margin-bottom:6px;"></div>
+                        <div style="display:flex; gap:6px;">
+                            <button id="credit-topup-btn" style="display:none; flex:1; padding:6px; background:#1677ff; color:#fff; border:none; border-radius:4px; cursor:pointer;">LDC 充值</button>
+                            <button id="rcredit-redeem-btn" style="display:none; flex:1; padding:6px; background:#722ed1; color:#fff; border:none; border-radius:4px; cursor:pointer;">兑换 LDC</button>
+                        </div>
                     </div>
                     <div id="helper-info" style="display:none; white-space:pre-line; font-size:11px; margin-top:8px; padding:8px; border-radius:4px; background:#f0f7ff; border:1px solid #adc6ff; color:#1890ff; line-height:1.5;">就绪...</div>
                     <button id="manual-btn" style="display:none; width:100%; margin-top:8px; background:#d33; color:#fff; border:none; padding:8px; border-radius:4px; cursor:pointer; animation: blink 1s infinite;">点我激活播放</button>
@@ -940,6 +956,8 @@
             location.reload();
         };
         document.getElementById('toggle-helper').onclick = toggleHelper;
+        document.getElementById('credit-topup-btn').onclick = startCreditTopup;
+        document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
         document.getElementById('manual-btn').onclick = () => { triggerIframePlay(); document.getElementById('manual-btn').style.display='none'; };
         document.getElementById('min-btn').onclick = () => { document.getElementById('music-helper-panel').style.display='none'; document.getElementById('helper-toggle-btn').style.display='flex'; };
         document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; } };
@@ -1153,6 +1171,7 @@
         const d = await callAPI('GET', '/me');
         if (d && d.user) {
             document.getElementById('login-status').innerText = `已登录: ${d.user.displayName}`;
+            economyState = d.economy || null;
             updateParticipantInfo(d.participant);
         }
     }
@@ -1161,6 +1180,8 @@
         if (!participant) return;
         const infoEl = document.getElementById('helper-info');
         const credits = Number(participant.credits || 0);
+        const rcredits = Number(participant.rcredits || 0);
+        const reservedRcredits = Number(participant.reserved_rcredits || 0);
         const monthlyReceived = Number(participant.monthly_received_help_count || 0);
         const monthlyLimit = Number(participant.monthly_received_limit || 0);
         const monthlyLine = monthlyLimit > 0
@@ -1172,10 +1193,93 @@
         const helperDispatchPauseLine = participant.helper_dispatch_credit_paused
             ? `当前接任务额度上限: ${Number(participant.helper_dispatch_credit_limit || 0)}（已暂停接新任务）`
             : '';
+        const rewardLine = participant.rcredit_reward_active
+            ? '本月已封顶：继续助力将赚取 rcredit'
+            : '';
         const noticeText = getParticipantNoticeText(participant);
+        updateWalletControls(participant);
         if (!isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}${monthlyLine ? `\n${monthlyLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+        }
+    }
+
+    function updateWalletControls(participant) {
+        const actions = document.getElementById('wallet-actions');
+        const summary = document.getElementById('wallet-summary');
+        const topupButton = document.getElementById('credit-topup-btn');
+        const redeemButton = document.getElementById('rcredit-redeem-btn');
+        if (!actions || !summary || !topupButton || !redeemButton) return;
+        const topupEnabled = !!(economyState && economyState.topup && economyState.topup.enabled);
+        const redemptionEnabled = !!(economyState && economyState.redemption && economyState.redemption.enabled);
+        const rcredits = Number(participant && participant.rcredits || 0);
+        actions.style.display = (topupEnabled || redemptionEnabled || rcredits > 0) ? 'block' : 'none';
+        topupButton.style.display = topupEnabled ? 'block' : 'none';
+        redeemButton.style.display = redemptionEnabled ? 'block' : 'none';
+        summary.innerText = `credit ${Number(participant && participant.credits || 0)} / rcredit ${rcredits}`;
+    }
+
+    async function startCreditTopup() {
+        const config = economyState && economyState.topup;
+        if (!config || !config.enabled) return alert(getErrorText('credit_topup_disabled'));
+        const amountLdc = window.prompt(
+            `输入充值金额（${config.minAmountLdc}-${config.maxAmountLdc} LDC）\n当前比例：1 LDC = ${config.creditsPerLdc} credit`,
+            config.minAmountLdc,
+        );
+        if (amountLdc === null) return;
+        const amount = Number(amountLdc);
+        if (!Number.isFinite(amount) || amount <= 0) return alert(getErrorText('invalid_topup_amount'));
+        const estimatedCredits = Math.floor(amount * Number(config.creditsPerLdc || 0) * (10000 - Number(config.feeBps || 0)) / 10000);
+        if (!window.confirm(`支付 ${amountLdc} LDC，预计到账 ${estimatedCredits} credit。继续吗？`)) return;
+        const result = await callAPI('POST', '/wallet/topups', { amountLdc: String(amountLdc) });
+        if (!result || isApiErrorPayload(result)) {
+            return alert(getPayloadErrorText(result, 'payment_create_failed'));
+        }
+        if (!result.paymentUrl) return alert('订单已创建，但支付链接暂不可用，请稍后重试。');
+        window.location.href = result.paymentUrl;
+    }
+
+    async function startRcreditRedemption() {
+        const config = economyState && economyState.redemption;
+        if (!config || !config.enabled) return alert(getErrorText('rcredit_redemption_disabled'));
+        const rcredits = window.prompt(
+            `输入兑换数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC`,
+            String(config.minRcredits || ''),
+        );
+        if (rcredits === null) return;
+        const amount = Math.floor(Number(rcredits));
+        if (!Number.isSafeInteger(amount) || amount <= 0) return alert(getErrorText('redemption_amount_too_small'));
+        const gross = amount / Number(config.rcreditsPerLdc || 1);
+        const fee = gross * Number(config.feeBps || 0) / 10000 + Number(config.fixedFeeLdc || 0);
+        const net = Math.max(0, gross - fee);
+        if (!window.confirm(`将冻结 ${amount} rcredit，预计实收 ${net.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')} LDC。兑换由管理员审核并转账，确认提交吗？`)) return;
+        const result = await callAPI('POST', '/wallet/redemptions', { rcredits: amount });
+        if (!result || isApiErrorPayload(result)) {
+            return alert(getPayloadErrorText(result, 'rcredit_redemption_failed'));
+        }
+        alert(`兑换申请已提交，预计实收 ${result.redemption.netAmountLdc} LDC。`);
+        await refreshMe();
+    }
+
+    async function refreshReturnedTopup(orderNo) {
+        if (!orderNo) return;
+        if (!GM_getValue(TOKEN_KEY, '')) {
+            cleanLoginParams();
+            alert('支付已返回，请登录后查看 credit 到账状态。');
+            return;
+        }
+        let result = null;
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+            result = await callAPI('GET', `/wallet/topups/${encodeURIComponent(orderNo)}`);
+            if (result && result.order && result.order.status !== 'pending') break;
+            await wait(2000);
+        }
+        cleanLoginParams();
+        if (result && result.order && result.order.status === 'paid') {
+            alert(`充值成功，${result.order.creditAmount} credit 已到账。`);
+            await refreshMe();
+        } else if (result && result.order) {
+            alert(`充值订单当前状态：${result.order.status}。稍后可重新打开面板刷新。`);
         }
     }
 
@@ -1317,6 +1421,10 @@
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
             const creditCost = Number(data.creditCost || 1);
+            const earnsRcredit = !!(data.participant && data.participant.rcredit_reward_active);
+            const rcreditRate = Number(economyState && economyState.rewards && economyState.rewards.rcreditsPerCredit || 1);
+            const rewardAmount = earnsRcredit ? Math.floor(creditCost * rcreditRate) : creditCost;
+            const rewardLabel = earnsRcredit ? 'rcredit' : 'credit';
             const expectedDurationMs = Number(data.targetDurationMs || 0);
             try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
             if (type === 'album') {
@@ -1442,7 +1550,7 @@
                     const speedWarning = playbackRateInvalid ? '\n检测到倍速播放，请恢复 1x 后继续' : '';
                     const displayDurationMs = expectedDurationMs > 0 ? expectedDurationMs : dur;
                     const displayListenedMs = displayDurationMs > 0 ? Math.min(localListenedMs, displayDurationMs) : localListenedMs;
-                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n歌曲时长: ${formatTime(displayDurationMs)}\n当前进度: ${formatTime(cur)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n本次完成可得额度: ${creditCost}${speedWarning}`;
+                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n歌曲时长: ${formatTime(displayDurationMs)}\n当前进度: ${formatTime(cur)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n本次完成可得: ${rewardAmount} ${rewardLabel}${speedWarning}`;
 
                     const enoughSongListen = displayListenedMs >= requiredListenMs;
                     const songFinished = (cur >= dur - 2000 || (state === 'stop' && cur > 0))
@@ -1476,6 +1584,7 @@
         const url = new URL(window.location.href);
         url.searchParams.delete('music_helper_ticket');
         url.searchParams.delete('music_helper_error');
+        url.searchParams.delete('music_helper_topup_order');
         window.history.replaceState(null, '', url.pathname + (url.search ? url.search : '') + url.hash);
     }
 
@@ -1493,6 +1602,7 @@
         const params = new URLSearchParams(window.location.search);
         const ticket = params.get('music_helper_ticket');
         const loginError = params.get('music_helper_error');
+        const topupOrder = params.get('music_helper_topup_order');
         if (ticket) {
             GM_setValue(ERROR_KEY, '');
             const claimResult = await claimTicket(ticket);
@@ -1512,6 +1622,8 @@
             GM_setValue(ERROR_KEY, loginError);
             cleanLoginParams();
             handleAccessError(loginError);
+        } else if (topupOrder) {
+            await refreshReturnedTopup(topupOrder);
         }
     }, 1500);
 })();
