@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.6.0
-// @description  V3.6.0：支持消费用户提交互助目标和充值，Helper 开通后再参与助力。
+// @version      3.7.0
+// @description  V3.7.0：支持 Helper 绑定收款应用，将 rcredit 兑换为 LDC。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.6.0';
+    const CURRENT_VERSION = '3.7.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -48,6 +48,7 @@
     let tabLockOwned = false;
     let economyState = null;
     let currentUserState = null;
+    let currentMerchantCredential = null;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
@@ -541,8 +542,12 @@
         if (code === 'redemption_net_amount_too_small') return '扣除手续费后的 LDC 金额低于最低要求。';
         if (code === 'redemption_already_pending') return '你已有一笔待处理的兑换申请。';
         if (code === 'insufficient_rcredits') return '可用 rcredit 不足。';
-        if (code === 'ldc_distribution_disabled') return 'LDC 自动分发暂未开放。';
-        if (code === 'distribution_requires_reconciliation') return '上一笔 LDC 分发结果尚待人工核对，请勿重复提交。';
+        if (code === 'merchant_credential_required') return '兑换前需要先绑定 EasyPay 收款应用。';
+        if (code === 'merchant_credential_immutable') return 'EasyPay 收款应用已经绑定，不能自行修改；如需重置请联系管理员。';
+        if (code === 'merchant_pid_already_bound') return '这个 EasyPay pid 已被其他 Helper 绑定。';
+        if (code === 'invalid_merchant_pid') return 'EasyPay pid 格式不正确。';
+        if (code === 'invalid_merchant_key') return 'EasyPay key 格式不正确。';
+        if (code === 'invalid_merchant_credential') return '无法验证这组 EasyPay pid/key，请检查后重试。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -949,6 +954,14 @@
                             <button id="rcredit-redeem-btn" style="display:none; flex:1; padding:6px; background:#722ed1; color:#fff; border:none; border-radius:4px; cursor:pointer;">兑换 LDC</button>
                         </div>
                     </div>
+                    <div id="merchant-credential-section" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid #eee;">
+                        <div id="merchant-credential-summary" style="font-size:11px; color:#666; line-height:1.5;"></div>
+                        <div id="merchant-credential-form" style="display:none; margin-top:6px; gap:5px; flex-direction:column;">
+                            <input id="merchant-pid-input" type="text" autocomplete="off" placeholder="EasyPay pid" style="width:100%; box-sizing:border-box; padding:6px; border:1px solid #ccc; border-radius:4px;">
+                            <input id="merchant-key-input" type="password" autocomplete="new-password" placeholder="EasyPay key" style="width:100%; box-sizing:border-box; padding:6px; border:1px solid #ccc; border-radius:4px;">
+                            <button id="merchant-bind-btn" style="width:100%; padding:6px; background:#0f766e; color:#fff; border:none; border-radius:4px; cursor:pointer;">绑定收款应用</button>
+                        </div>
+                    </div>
                     <div id="helper-info" style="display:none; white-space:pre-line; font-size:11px; margin-top:8px; padding:8px; border-radius:4px; background:#f0f7ff; border:1px solid #adc6ff; color:#1890ff; line-height:1.5;">就绪...</div>
                     <button id="manual-btn" style="display:none; width:100%; margin-top:8px; background:#d33; color:#fff; border:none; padding:8px; border-radius:4px; cursor:pointer; animation: blink 1s infinite;">点我激活播放</button>
                 </div>
@@ -992,6 +1005,7 @@
         document.getElementById('helper-register-btn').onclick = startHelperRegistration;
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
+        document.getElementById('merchant-bind-btn').onclick = bindMerchantCredential;
         document.getElementById('manual-btn').onclick = () => { triggerIframePlay(); document.getElementById('manual-btn').style.display='none'; };
         document.getElementById('min-btn').onclick = () => { document.getElementById('music-helper-panel').style.display='none'; document.getElementById('helper-toggle-btn').style.display='flex'; };
         document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; } };
@@ -1222,8 +1236,10 @@
             const accountType = d.user.isRegistered ? 'Helper' : '消费用户';
             document.getElementById('login-status').innerText = `已登录: ${d.user.displayName} · ${accountType}`;
             economyState = d.economy || null;
+            currentMerchantCredential = d.merchantCredential || { bound: false };
             updatePrimaryAction();
             updateParticipantInfo(d.participant);
+            updateMerchantCredentialControls();
         }
     }
 
@@ -1274,6 +1290,46 @@
         summary.innerText = `credit ${Number(participant && participant.credits || 0)} / rcredit ${rcredits}`;
     }
 
+    function updateMerchantCredentialControls() {
+        const section = document.getElementById('merchant-credential-section');
+        const summary = document.getElementById('merchant-credential-summary');
+        const form = document.getElementById('merchant-credential-form');
+        if (!section || !summary || !form) return;
+        const visible = isCurrentUserHelper()
+            && !!(economyState && economyState.redemption && economyState.redemption.enabled);
+        section.style.display = visible ? 'block' : 'none';
+        if (!visible) return;
+        if (currentMerchantCredential && currentMerchantCredential.bound) {
+            summary.innerText = `EasyPay 已绑定\npid: ${currentMerchantCredential.pid}\nkey 指纹: ${currentMerchantCredential.keyFingerprint}`;
+            summary.style.whiteSpace = 'pre-line';
+            form.style.display = 'none';
+        } else {
+            summary.innerText = '绑定用于接收兑换 LDC 的 EasyPay 应用';
+            summary.style.whiteSpace = 'normal';
+            form.style.display = 'flex';
+        }
+    }
+
+    async function bindMerchantCredential() {
+        const pidInput = document.getElementById('merchant-pid-input');
+        const keyInput = document.getElementById('merchant-key-input');
+        const button = document.getElementById('merchant-bind-btn');
+        const pid = String(pidInput && pidInput.value || '').trim();
+        const key = String(keyInput && keyInput.value || '').trim();
+        if (!pid || !key) return alert('请输入 EasyPay pid 和 key。');
+        if (!window.confirm('绑定后不能自行修改。确认使用这组 EasyPay 应用接收兑换 LDC？')) return;
+        button.disabled = true;
+        const result = await callAPI('POST', '/wallet/merchant-credential', { pid, key });
+        button.disabled = false;
+        if (!result || isApiErrorPayload(result)) {
+            return alert(getPayloadErrorText(result, 'invalid_merchant_credential'));
+        }
+        if (keyInput) keyInput.value = '';
+        currentMerchantCredential = result.credential || { bound: false };
+        updateMerchantCredentialControls();
+        alert('EasyPay 收款应用已绑定。');
+    }
+
     async function startCreditTopup() {
         const config = economyState && economyState.topup;
         if (!config || !config.enabled) return alert(getErrorText('credit_topup_disabled'));
@@ -1297,6 +1353,10 @@
     async function startRcreditRedemption() {
         const config = economyState && economyState.redemption;
         if (!config || !config.enabled) return alert(getErrorText('rcredit_redemption_disabled'));
+        if (!currentMerchantCredential || !currentMerchantCredential.bound) {
+            updateMerchantCredentialControls();
+            return alert(getErrorText('merchant_credential_required'));
+        }
         const rcredits = window.prompt(
             `输入兑换数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC`,
             String(config.minRcredits || ''),
@@ -1307,21 +1367,12 @@
         const gross = amount / Number(config.rcreditsPerLdc || 1);
         const fee = gross * Number(config.feeBps || 0) / 10000 + Number(config.fixedFeeLdc || 0);
         const net = Math.floor(Math.max(0, gross - fee) * 100) / 100;
-        const settlementText = config.settlementMode === 'automatic'
-            ? '提交后将通过官方商户分发接口自动转账'
-            : '提交后进入管理员结算队列';
-        if (!window.confirm(`将冻结 ${amount} rcredit，预计实收 ${net.toFixed(2)} LDC。${settlementText}，确认提交吗？`)) return;
+        if (!window.confirm(`将冻结 ${amount} rcredit，预计实收 ${net.toFixed(2)} LDC。提交后由管理员创建付款订单并完成支付，确认提交吗？`)) return;
         const result = await callAPI('POST', '/wallet/redemptions', { rcredits: amount });
         if (!result || isApiErrorPayload(result)) {
             return alert(getPayloadErrorText(result, 'rcredit_redemption_failed'));
         }
-        if (result.redemption.status === 'paid') {
-            alert(`兑换成功，${result.redemption.netAmountLdc} LDC 已通过商户分发到账。`);
-        } else if (result.redemption.distributionState === 'uncertain') {
-            alert('分发结果暂时无法确认，rcredit 仍保持冻结，管理员核对后会完成结算。');
-        } else {
-            alert(`兑换申请已提交，预计实收 ${result.redemption.netAmountLdc} LDC。`);
-        }
+        alert(`兑换申请已进入管理员付款队列，已冻结 ${result.redemption.rcreditAmount} rcredit，预计收款 ${result.redemption.netAmountLdc} LDC。`);
         await refreshMe();
     }
 
