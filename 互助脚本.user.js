@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.1
-// @description  V3.7.1：全新 Tab 面板，互助、钱包与账户分区展示。
+// @version      3.7.2
+// @description  V3.7.2：增加 Linux.do 收款应用创建与 URL 填写说明。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.1';
+    const CURRENT_VERSION = '3.7.2';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -542,12 +542,12 @@
         if (code === 'redemption_net_amount_too_small') return '扣除手续费后的 LDC 金额低于最低要求。';
         if (code === 'redemption_already_pending') return '你已有一笔待处理的兑换申请。';
         if (code === 'insufficient_rcredits') return '可用 rcredit 不足。';
-        if (code === 'merchant_credential_required') return '兑换前需要先绑定 EasyPay 收款应用。';
-        if (code === 'merchant_credential_immutable') return 'EasyPay 收款应用已经绑定，不能自行修改；如需重置请联系管理员。';
-        if (code === 'merchant_pid_already_bound') return '这个 EasyPay pid 已被其他 Helper 绑定。';
-        if (code === 'invalid_merchant_pid') return 'EasyPay pid 格式不正确。';
-        if (code === 'invalid_merchant_key') return 'EasyPay key 格式不正确。';
-        if (code === 'invalid_merchant_credential') return '无法验证这组 EasyPay pid/key，请检查后重试。';
+        if (code === 'merchant_credential_required') return '兑换前需要先绑定 Linux.do 收款应用。';
+        if (code === 'merchant_credential_immutable') return '收款应用已经绑定，不能自行修改；如需重置请联系管理员。';
+        if (code === 'merchant_client_id_already_bound') return '这个 Client ID 已被其他 Helper 绑定。';
+        if (code === 'invalid_merchant_client_id') return 'Client ID 格式不正确。';
+        if (code === 'invalid_merchant_client_secret') return 'Client Secret 格式不正确。';
+        if (code === 'invalid_merchant_credential') return '无法验证这组 Client ID / Client Secret，请检查后重试。';
         return code ? `发生错误：${code}` : '';
     }
 
@@ -1007,11 +1007,20 @@
                                 </div>
                             </div>
                             <div id="merchant-credential-section" class="helper-merchant-card" style="display:none;">
-                                <div class="helper-card-title"><span>EasyPay 收款应用</span><span class="helper-lock-badge">一次绑定</span></div>
+                                <div class="helper-card-title">
+                                    <span class="helper-card-title-label">Linux.do 收款应用<button id="merchant-help-btn" class="helper-help-btn" type="button" aria-label="查看创建应用说明" aria-expanded="false">i</button></span>
+                                    <span class="helper-lock-badge">一次绑定</span>
+                                </div>
+                                <div id="merchant-help-popover" class="helper-help-popover" hidden>
+                                    <strong>创建应用时这样填写</strong>
+                                    <div class="helper-help-row"><span>通知 URL（必填）</span><code>http://localhost:3000/</code></div>
+                                    <div class="helper-help-row"><span>回调 URL</span><span>可以留空；如果页面要求填写，也填：</span><code>http://localhost:3000/</code></div>
+                                    <p>兑换订单会由系统自动覆盖真实的通知 URL 和返回 URL，不需要自己部署回调服务。</p>
+                                </div>
                                 <div id="merchant-credential-summary" class="helper-card-copy"></div>
                                 <div id="merchant-credential-form" class="helper-credential-form" style="display:none;">
-                                    <input id="merchant-pid-input" type="text" autocomplete="off" placeholder="EasyPay pid">
-                                    <input id="merchant-key-input" type="password" autocomplete="new-password" placeholder="EasyPay key">
+                                    <input id="merchant-client-id-input" type="text" autocomplete="off" placeholder="Client ID">
+                                    <input id="merchant-client-secret-input" type="password" autocomplete="new-password" placeholder="Client Secret">
                                     <button id="merchant-bind-btn" class="helper-btn helper-btn-teal" type="button">绑定收款应用</button>
                                 </div>
                             </div>
@@ -1162,9 +1171,21 @@
             .helper-balance-card small { display: block; margin-top: 5px; color: #999ca2; font-size: 9px; }
             .helper-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
             .helper-merchant-card, .helper-account-card { padding: 12px; border: 1px solid var(--mh-line); border-radius: 12px; background: #fafafd; }
+            .helper-merchant-card { position: relative; }
             .helper-card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
+            .helper-card-title-label { display: inline-flex; align-items: center; gap: 6px; }
+            .helper-help-btn { display: inline-grid; width: 17px; height: 17px; padding: 0; place-items: center; border: 1px solid #989ca3; border-radius: 50%; color: #666a71; background: transparent; font: 700 11px/1 serif; cursor: pointer; }
+            .helper-help-btn:hover, .helper-help-btn[aria-expanded="true"] { color: var(--mh-red-dark); border-color: var(--mh-red); background: #fff1f2; }
             .helper-lock-badge { padding: 3px 6px; border-radius: 999px; color: #8a6218; background: #fff1cc; font-size: 9px; font-weight: 700; }
             .helper-card-copy { margin-top: 7px; color: var(--mh-muted); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+            .helper-help-popover { position: absolute; z-index: 5; top: 38px; right: 8px; left: 8px; padding: 12px; border: 1px solid #dedfe3; border-radius: 12px; color: #373a40; background: #fff; box-shadow: 0 14px 34px rgba(26,29,35,.18); font-size: 11px; line-height: 1.5; }
+            .helper-help-popover::before { content: ""; position: absolute; top: -6px; left: 116px; width: 10px; height: 10px; border-top: 1px solid #dedfe3; border-left: 1px solid #dedfe3; background: #fff; transform: rotate(45deg); }
+            .helper-help-popover[hidden] { display: none; }
+            .helper-help-popover strong { display: block; margin-bottom: 8px; font-size: 12px; }
+            .helper-help-row { display: grid; gap: 3px; margin-top: 7px; }
+            .helper-help-row > span:first-child { color: #686c73; font-weight: 700; }
+            .helper-help-row code { padding: 5px 7px; border-radius: 7px; color: #9f2f37; background: #fff1f2; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; user-select: text; }
+            .helper-help-popover p { margin: 9px 0 0; color: #777b82; }
             .helper-credential-form { gap: 7px; margin-top: 9px; flex-direction: column; }
             .helper-credential-form input { width: 100%; border-radius: 9px; }
             .helper-account-card { color: #555960; line-height: 1.6; white-space: pre-line; }
@@ -1198,6 +1219,14 @@
             button.onclick = () => activateHelperTab(button.dataset.helperTab);
         });
         activateHelperTab(savedTab, false);
+
+        const merchantHelpButton = document.getElementById('merchant-help-btn');
+        const merchantHelpPopover = document.getElementById('merchant-help-popover');
+        merchantHelpButton.onclick = () => {
+            const opening = merchantHelpPopover.hidden;
+            merchantHelpPopover.hidden = !opening;
+            merchantHelpButton.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        };
 
         document.getElementById('login-linuxdo').onclick = async () => {
             GM_setValue(ERROR_KEY, '');
@@ -1510,34 +1539,36 @@
         section.style.display = visible ? 'block' : 'none';
         if (!visible) return;
         if (currentMerchantCredential && currentMerchantCredential.bound) {
-            summary.innerText = `EasyPay 已绑定\npid: ${currentMerchantCredential.pid}\nkey 指纹: ${currentMerchantCredential.keyFingerprint}`;
+            const clientId = currentMerchantCredential.clientId || '';
+            const secretFingerprint = currentMerchantCredential.clientSecretFingerprint || '';
+            summary.innerText = `收款应用已绑定\nClient ID: ${clientId}\nClient Secret 指纹: ${secretFingerprint}`;
             summary.style.whiteSpace = 'pre-line';
             form.style.display = 'none';
         } else {
-            summary.innerText = '绑定用于接收兑换 LDC 的 EasyPay 应用';
+            summary.innerText = '绑定用于接收兑换 LDC 的 Linux.do 收款应用';
             summary.style.whiteSpace = 'normal';
             form.style.display = 'flex';
         }
     }
 
     async function bindMerchantCredential() {
-        const pidInput = document.getElementById('merchant-pid-input');
-        const keyInput = document.getElementById('merchant-key-input');
+        const clientIdInput = document.getElementById('merchant-client-id-input');
+        const clientSecretInput = document.getElementById('merchant-client-secret-input');
         const button = document.getElementById('merchant-bind-btn');
-        const pid = String(pidInput && pidInput.value || '').trim();
-        const key = String(keyInput && keyInput.value || '').trim();
-        if (!pid || !key) return alert('请输入 EasyPay pid 和 key。');
-        if (!window.confirm('绑定后不能自行修改。确认使用这组 EasyPay 应用接收兑换 LDC？')) return;
+        const clientId = String(clientIdInput && clientIdInput.value || '').trim();
+        const clientSecret = String(clientSecretInput && clientSecretInput.value || '').trim();
+        if (!clientId || !clientSecret) return alert('请输入 Client ID 和 Client Secret。');
+        if (!window.confirm('绑定后不能自行修改。确认使用这个 Linux.do 应用接收兑换 LDC？')) return;
         button.disabled = true;
-        const result = await callAPI('POST', '/wallet/merchant-credential', { pid, key });
+        const result = await callAPI('POST', '/wallet/merchant-credential', { clientId, clientSecret });
         button.disabled = false;
         if (!result || isApiErrorPayload(result)) {
             return alert(getPayloadErrorText(result, 'invalid_merchant_credential'));
         }
-        if (keyInput) keyInput.value = '';
+        if (clientSecretInput) clientSecretInput.value = '';
         currentMerchantCredential = result.credential || { bound: false };
         updateMerchantCredentialControls();
-        alert('EasyPay 收款应用已绑定。');
+        alert('Linux.do 收款应用已绑定。');
     }
 
     async function startCreditTopup() {
