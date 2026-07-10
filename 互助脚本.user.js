@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.4.10
-// @description  V3.4.10：改用同域 callback 回传 Linux.do 画像，避免弹窗消息链失效。
+// @version      3.4.11
+// @description  V3.4.11：限制 Linux.do 画像回传地址，避免用户数据被转发到非服务域名。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -20,7 +20,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.4.10';
+    const CURRENT_VERSION = '3.4.11';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -53,6 +53,19 @@
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
     function getSafePlayer() { try { const uw = getUnsafeWindow(); return window.player || uw.player || null; } catch(e) { return null; } }
 
+    function normalizeProbeCallbackUrl(value) {
+        try {
+            const callback = new URL(String(value || '').trim());
+            const serviceOrigin = new URL(API_BASE).origin;
+            if (callback.protocol !== 'https:' || callback.origin !== serviceOrigin) return '';
+            if (callback.pathname !== '/register/probe-callback') return '';
+            if (callback.username || callback.password || callback.search || callback.hash) return '';
+            return callback.toString();
+        } catch (e) {
+            return '';
+        }
+    }
+
     if (window.location.hostname === 'linux.do') {
         handleLinuxDoProbePage();
         return;
@@ -80,7 +93,7 @@
         if (params.get('music_helper_probe') !== '1') return;
         const probeToken = String(params.get('music_helper_probe_token') || '').trim();
         const username = String(params.get('music_helper_username') || '').trim();
-        const callbackUrl = String(params.get('music_helper_callback') || '').trim();
+        const callbackUrl = normalizeProbeCallbackUrl(params.get('music_helper_callback'));
 
         const relayResult = (payload) => {
             try {
@@ -98,7 +111,10 @@
 
         const showStatus = (text) => {
             try {
-                document.body.innerHTML = '<div style="padding:24px;font:14px/1.6 sans-serif;color:#333;">' + String(text || '') + '</div>';
+                const status = document.createElement('div');
+                status.style.cssText = 'padding:24px;font:14px/1.6 sans-serif;color:#333;';
+                status.textContent = String(text || '');
+                document.body.replaceChildren(status);
             } catch (error) {}
         };
 
