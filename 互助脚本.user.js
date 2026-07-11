@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.6
-// @description  V3.7.6：消费用户需先保存互助目标再充值，并优化不同账户类型的操作按钮。
+// @version      3.7.7
+// @description  V3.7.7：调整 Helper 注册定价区间，使常规用户倍率集中在 0.8-1.2。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.6';
+    const CURRENT_VERSION = '3.7.7';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
