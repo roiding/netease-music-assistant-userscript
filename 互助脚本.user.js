@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.3
-// @description  V3.7.3：注册页改为本地桥接 Linux.do 活跃度同步，减少回传失败。
+// @version      3.7.4
+// @description  V3.7.4：收款应用绑定后不再展示凭据值，避免泄露和界面溢出。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.3';
+    const CURRENT_VERSION = '3.7.4';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1635,10 +1635,8 @@
         section.style.display = visible ? 'block' : 'none';
         if (!visible) return;
         if (currentMerchantCredential && currentMerchantCredential.bound) {
-            const clientId = currentMerchantCredential.clientId || '';
-            const secretFingerprint = currentMerchantCredential.clientSecretFingerprint || '';
-            summary.innerText = `收款应用已绑定\nClient ID: ${clientId}\nClient Secret 指纹: ${secretFingerprint}`;
-            summary.style.whiteSpace = 'pre-line';
+            summary.innerText = 'Linux.do 收款应用已绑定，凭据已安全保存，兑换 LDC 时会自动使用。';
+            summary.style.whiteSpace = 'normal';
             form.style.display = 'none';
         } else {
             summary.innerText = '绑定用于接收兑换 LDC 的 Linux.do 收款应用';
