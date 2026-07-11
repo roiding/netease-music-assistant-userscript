@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.5
-// @description  V3.7.5：兑换付款单展示完整订单信息，并明确收款应用默认回调地址的用途。
+// @version      3.7.6
+// @description  V3.7.6：消费用户需先保存互助目标再充值，并优化不同账户类型的操作按钮。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.5';
+    const CURRENT_VERSION = '3.7.6';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -55,6 +55,7 @@
     let tabLockOwned = false;
     let economyState = null;
     let currentUserState = null;
+    let currentParticipantState = null;
     let currentMerchantCredential = null;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
@@ -630,6 +631,7 @@
         if (code === 'targets_monthly_capped') return '当前可用目标都已达到本月被互助上限。';
         if (code === 'targets_temporarily_unavailable') return '当前没有可立即分配的互助任务。';
         if (code === 'credit_topup_disabled') return 'LDC 充值 credit 暂未开放。';
+        if (code === 'topup_target_required') return '消费用户充值前请先保存一首可用于互助的歌曲或专辑。';
         if (code === 'invalid_topup_amount') return '请输入有效的 LDC 充值金额。';
         if (code === 'invalid_topup_amount_precision') return 'LDC 充值金额最多支持两位小数。';
         if (code === 'topup_amount_out_of_range') return '充值金额不在当前允许范围内。';
@@ -755,7 +757,10 @@
         const toggleButton = document.getElementById('toggle-helper');
         const registerButton = document.getElementById('helper-register-btn');
         if (toggleButton && !isHelperRunning) {
-            toggleButton.innerText = isCurrentUserHelper() ? '开启互助' : '提交互助目标';
+            const hasTarget = !!(currentParticipantState && currentParticipantState.music_id);
+            toggleButton.innerText = isCurrentUserHelper()
+                ? '启动助力并保存目标'
+                : (hasTarget ? '更新互助目标' : '保存互助目标');
             toggleButton.style.background = '';
         }
         if (registerButton) {
@@ -1088,7 +1093,7 @@
                                 </select>
                                 <input type="text" id="my-music-id" placeholder="输入网易云 ID" value="${escapeHtml(GM_getValue('myMusicId', ''))}">
                             </div>
-                            <button id="toggle-helper" class="helper-btn helper-btn-primary" type="button">开启互助</button>
+                            <button id="toggle-helper" class="helper-btn helper-btn-primary" type="button">保存目标 / 启动助力</button>
                             <div id="helper-info" class="helper-status-card" style="display:none;">就绪...</div>
                             <button id="manual-btn" class="helper-btn helper-btn-danger helper-manual-btn" type="button" style="display:none;">点我激活播放</button>
                         </section>
@@ -1563,17 +1568,32 @@
         const d = await callAPI('GET', '/me');
         if (d && d.user) {
             currentUserState = d.user;
+            currentParticipantState = d.participant || null;
             const accountType = d.user.isRegistered ? 'Helper' : '消费用户';
             document.getElementById('login-status').innerText = `已登录: ${d.user.displayName} · ${accountType}`;
             economyState = d.economy || null;
             currentMerchantCredential = d.merchantCredential || { bound: false };
             updatePrimaryAction();
             updateParticipantInfo(d.participant);
+            hydrateTargetInput(d.participant);
             updateMerchantCredentialControls();
         }
     }
 
+    function hydrateTargetInput(participant) {
+        const musicId = String(participant && participant.music_id || '');
+        const match = musicId.match(/^(song|album):(.+)$/);
+        if (!match) return;
+        const typeInput = document.getElementById('my-music-type');
+        const idInput = document.getElementById('my-music-id');
+        if (typeInput) typeInput.value = match[1];
+        if (idInput) idInput.value = match[2];
+        GM_setValue('myMusicType', match[1]);
+        GM_setValue('myMusicId', match[2]);
+    }
+
     function updateParticipantInfo(participant) {
+        currentParticipantState = participant || null;
         const infoEl = document.getElementById('helper-info');
         const state = participant || {};
         const credits = Number(state.credits || 0);
@@ -1668,6 +1688,10 @@
     async function startCreditTopup() {
         const config = economyState && economyState.topup;
         if (!config || !config.enabled) return alert(getErrorText('credit_topup_disabled'));
+        if (!isCurrentUserHelper() && !(currentParticipantState && currentParticipantState.music_id)) {
+            activateHelperTab('help');
+            return alert(getErrorText('topup_target_required'));
+        }
         const amountLdc = window.prompt(
             `输入充值金额（${config.minAmountLdc}-${config.maxAmountLdc} LDC）\n当前比例：1 LDC = ${config.creditsPerLdc} credit`,
             config.minAmountLdc,
@@ -1759,7 +1783,10 @@
         const toggleButton = document.getElementById('toggle-helper');
         const helperInfo = document.getElementById('helper-info');
         if (toggleButton) {
-            toggleButton.innerText = isCurrentUserHelper() ? '开启互助' : '提交互助目标';
+            const hasTarget = !!(currentParticipantState && currentParticipantState.music_id);
+            toggleButton.innerText = isCurrentUserHelper()
+                ? '启动助力并保存目标'
+                : (hasTarget ? '更新互助目标' : '保存互助目标');
             toggleButton.style.background = '';
         }
         if (helperInfo) {
