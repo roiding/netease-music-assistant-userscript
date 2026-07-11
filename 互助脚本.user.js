@@ -1109,9 +1109,9 @@
                                 </div>
                                 <div id="merchant-help-popover" class="helper-help-popover" hidden>
                                     <strong>创建应用时这样填写</strong>
-                                    <div class="helper-help-row"><span>通知 URL（必填）</span><code>http://localhost:3000/</code></div>
-                                    <div class="helper-help-row"><span>回调 URL</span><span>可以留空；如果页面要求填写，也填：</span><code>http://localhost:3000/</code></div>
-                                    <p>兑换订单会由系统自动覆盖真实的通知 URL 和返回 URL，不需要自己部署回调服务。</p>
+                                    <div class="helper-help-row"><span>应用默认通知 URL（必填）</span><code>http://localhost:3000/</code></div>
+                                    <div class="helper-help-row"><span>应用默认回调 URL</span><span>可以留空；如果页面要求填写，也填：</span><code>http://localhost:3000/</code></div>
+                                    <p>这里填写的是创建应用时的默认占位地址，不是真实订单回调。管理员生成兑换付款单时，系统会为该订单覆盖成 Helper 线上真实的通知 URL 和返回 URL，你不需要部署 localhost 服务。</p>
                                 </div>
                                 <div id="merchant-credential-summary" class="helper-card-copy"></div>
                                 <div id="merchant-credential-form" class="helper-credential-form" style="display:none;">
