@@ -1,15 +1,19 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.2
-// @description  V3.7.2：增加 Linux.do 收款应用创建与 URL 填写说明。
+// @version      3.7.3
+// @description  V3.7.3：注册页改为本地桥接 Linux.do 活跃度同步，减少回传失败。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
 // @match        *://linux.do/latest*
+// @match        *://netease.ran-ding.gq/register*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @grant        GM_addStyle
 // @grant        unsafeWindow
 // @connect      netease.ran-ding.gq
@@ -20,10 +24,13 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.2';
+    const CURRENT_VERSION = '3.7.3';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
+    const REGISTRATION_BRIDGE_SOURCE = 'music-helper-register-bridge';
+    const REGISTRATION_PROBE_KEY_PREFIX = 'musicHelperRegistrationProbe:';
+    const REGISTRATION_PROBE_CONTEXT_EVENT = 'music-helper-register-probe-context';
     const TOKEN_KEY = 'musicHelperToken';
     const LEGACY_TOKEN_KEY = 'linuxDoToken';
     const ACCESS_EXPIRES_AT_KEY = 'musicHelperAccessExpiresAt';
@@ -55,22 +62,30 @@
     function safeJSON(text) { try { return JSON.parse(text); } catch (e) { return null; } }
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
     function getSafePlayer() { try { const uw = getUnsafeWindow(); return window.player || uw.player || null; } catch(e) { return null; } }
-
-    function normalizeProbeCallbackUrl(value) {
+    function registrationProbeStorageKey(probeToken) { return `${REGISTRATION_PROBE_KEY_PREFIX}${String(probeToken || '').trim()}`; }
+    function isRegistrationBridgePage() {
         try {
-            const callback = new URL(String(value || '').trim());
             const serviceOrigin = new URL(API_BASE).origin;
-            if (callback.protocol !== 'https:' || callback.origin !== serviceOrigin) return '';
-            if (callback.pathname !== '/register/probe-callback') return '';
-            if (callback.username || callback.password || callback.search || callback.hash) return '';
-            return callback.toString();
+            return window.location.origin === serviceOrigin && window.location.pathname === '/register';
         } catch (e) {
-            return '';
+            return false;
         }
+    }
+    function isMusicHostPage() {
+        return window.location.hostname === 'music.163.com';
     }
 
     if (window.location.hostname === 'linux.do') {
         handleLinuxDoProbePage();
+        return;
+    }
+
+    if (isRegistrationBridgePage()) {
+        handleRegistrationBridgePage();
+        return;
+    }
+
+    if (!isMusicHostPage()) {
         return;
     }
 
@@ -96,20 +111,26 @@
         if (params.get('music_helper_probe') !== '1') return;
         const probeToken = String(params.get('music_helper_probe_token') || '').trim();
         const username = String(params.get('music_helper_username') || '').trim();
-        const callbackUrl = normalizeProbeCallbackUrl(params.get('music_helper_callback'));
 
         const relayResult = (payload) => {
+            const envelope = {
+                source: LINUXDO_PROBE_SOURCE,
+                probeToken,
+                username,
+                relayedAt: Date.now(),
+                ...payload,
+            };
             try {
-                window.name = JSON.stringify({
-                    source: LINUXDO_PROBE_SOURCE,
-                    probeToken,
-                    username,
-                    ...payload,
-                });
-            } catch (error) {}
-            if (callbackUrl) {
-                window.location.href = callbackUrl;
+                if (probeToken) {
+                    GM_setValue(registrationProbeStorageKey(probeToken), JSON.stringify(envelope));
+                }
+            } catch (error) {
+                return {
+                    ok: false,
+                    errorMessage: '本地同步缓存失败，请确认篡改猴脚本拥有存储权限后重试。',
+                };
             }
+            return envelope;
         };
 
         const showStatus = (text) => {
@@ -124,10 +145,6 @@
         if (!probeToken || !username) {
             relayResult({ ok: false, errorMessage: 'Linux.do 同步参数不完整，请返回注册页刷新后重试。' });
             showStatus('Linux.do 同步参数不完整，请返回注册页刷新后重试。');
-            return;
-        }
-        if (!callbackUrl) {
-            showStatus('缺少回传地址，请返回注册页刷新后重试。');
             return;
         }
 
@@ -160,6 +177,8 @@
                 contentType: response.headers.get('content-type') || '',
                 cardPayload: payload,
             });
+            showStatus('Linux.do 活跃度画像已同步，当前窗口会自动关闭。');
+            window.setTimeout(() => { try { window.close(); } catch (error) {} }, 300);
         } catch (error) {
             relayResult({
                 ok: false,
@@ -167,6 +186,83 @@
             });
             showStatus('Linux.do 活跃度画像读取失败，请返回注册页重试。');
         }
+    }
+
+    function handleRegistrationBridgePage() {
+        const pageWindow = getUnsafeWindow();
+        let currentProbeToken = '';
+        let probeListenerId = null;
+        try {
+            pageWindow.__musicHelperRegisterBridgeReady = true;
+        } catch (e) {}
+
+        const postProbePayload = (payload) => {
+            try {
+                pageWindow.postMessage({
+                    source: REGISTRATION_BRIDGE_SOURCE,
+                    type: 'probe-result',
+                    payload,
+                }, window.location.origin);
+            } catch (error) {}
+        };
+
+        const consumeProbePayload = (probeToken) => {
+            if (!probeToken) return;
+            const storageKey = registrationProbeStorageKey(probeToken);
+            const raw = GM_getValue(storageKey, '');
+            if (!raw) return;
+            try { GM_deleteValue(storageKey); } catch (error) {}
+            const payload = safeJSON(raw);
+            if (!payload || payload.probeToken !== probeToken) return;
+            postProbePayload(payload);
+        };
+
+        const unbindProbeListener = () => {
+            if (probeListenerId == null) return;
+            try {
+                GM_removeValueChangeListener(probeListenerId);
+            } catch (error) {}
+            probeListenerId = null;
+        };
+
+        const bindProbeListener = (probeToken) => {
+            const normalizedProbeToken = String(probeToken || '').trim();
+            if (normalizedProbeToken === currentProbeToken) return;
+            unbindProbeListener();
+            currentProbeToken = normalizedProbeToken;
+            if (!currentProbeToken) return;
+            const storageKey = registrationProbeStorageKey(currentProbeToken);
+            try {
+                probeListenerId = GM_addValueChangeListener(storageKey, (_name, _oldValue, newValue) => {
+                    if (!newValue) return;
+                    try { GM_deleteValue(storageKey); } catch (error) {}
+                    const payload = typeof newValue === 'string' ? safeJSON(newValue) : newValue;
+                    if (!payload || payload.probeToken !== currentProbeToken) return;
+                    postProbePayload(payload);
+                });
+            } catch (error) {
+                probeListenerId = null;
+            }
+            consumeProbePayload(currentProbeToken);
+        };
+
+        const syncProbeContext = () => {
+            const bridge = pageWindow.__musicHelperRegisterProbeContext;
+            bindProbeListener(String(bridge && bridge.probeToken || '').trim());
+        };
+
+        window.addEventListener(REGISTRATION_PROBE_CONTEXT_EVENT, syncProbeContext);
+        window.addEventListener('focus', syncProbeContext);
+        window.addEventListener('pageshow', syncProbeContext);
+        window.addEventListener('pagehide', () => {
+            const probeToken = currentProbeToken;
+            unbindProbeListener();
+            currentProbeToken = '';
+            if (probeToken) {
+                try { GM_deleteValue(registrationProbeStorageKey(probeToken)); } catch (error) {}
+            }
+        });
+        syncProbeContext();
     }
 
     function readTabLock() {
