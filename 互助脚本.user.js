@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.8
-// @description  V3.7.8：增加每月互助池 credit 平衡机制。
+// @version      3.7.9
+// @description  V3.7.9：自动排除普通用户无法播放的 VIP 或付费歌曲。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.8';
+    const CURRENT_VERSION = '3.7.9';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -919,6 +919,17 @@
         }
     }
 
+    function isUnpaidRestrictedSong(song, privilege) {
+        const feeValue = privilege && privilege.fee != null ? privilege.fee : (song && song.fee);
+        const fee = Number(feeValue || 0);
+        const payed = Number(privilege && privilege.payed || 0);
+        if (Number.isFinite(fee) && fee > 0 && payed <= 0) return true;
+
+        if (!privilege || privilege.pl == null || privilege.pl === '') return false;
+        const playableBitrate = Number(privilege.pl);
+        return Number.isFinite(playableBitrate) && playableBitrate <= 0;
+    }
+
     async function fetchSongDuration(songId) {
         try {
             const normalizedSongId = encodeURIComponent(String(songId || '').trim());
@@ -936,6 +947,7 @@
                 || (typeof song.resourceState === 'boolean' && song.resourceState === false)
                 || (Number(song.st) < 0)
                 || (privilege && Number(privilege.st) < 0)
+                || isUnpaidRestrictedSong(song, privilege)
                 || (privilege && privilege.freeTrialPrivilege && Number(privilege.freeTrialPrivilege.cannotListenReason) > 0)
                 || (privilege && privilege.message));
             if (blocked) {
@@ -967,6 +979,7 @@
                         || (typeof (song && song.resourceState) === 'boolean' && song.resourceState === false)
                         || Number(song && song.st) < 0
                         || Number(privilege && privilege.st) < 0
+                        || isUnpaidRestrictedSong(song, privilege)
                         || Number(privilege && privilege.freeTrialPrivilege && privilege.freeTrialPrivilege.cannotListenReason) > 0
                         || !!(privilege && privilege.message);
                     if (!/^\d+$/.test(id) || !Number.isFinite(durationMs) || durationMs < MIN_HELP_TRACK_DURATION_MS || blocked) {
