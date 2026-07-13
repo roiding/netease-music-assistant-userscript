@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.0
-// @description  V3.8.0：新增短歌 credit 惩罚与 rcredit 贡献门槛、每日上限保护。
+// @version      3.8.1
+// @description  V3.8.1：新增助力 credit 每月衰减，充值、CDK 与空投 credit 保持永久。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.0';
+    const CURRENT_VERSION = '3.8.1';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1611,6 +1611,7 @@
         const infoEl = document.getElementById('helper-info');
         const state = participant || {};
         const credits = Number(state.credits || 0);
+        const decayableCredits = Number(state.decayable_credits || 0);
         const rcredits = Number(state.rcredits || 0);
         const reservedRcredits = Number(state.reserved_rcredits || 0);
         const monthlyReceived = Number(state.monthly_received_help_count || 0);
@@ -1638,7 +1639,7 @@
         updateWalletControls(state);
         if (infoEl && !isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}${decayableCredits > 0 ? `（其中助力余额 ${decayableCredits}）` : ''}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -1656,9 +1657,10 @@
         topupButton.style.display = topupEnabled ? 'block' : 'none';
         redeemButton.style.display = canRedeem ? 'block' : 'none';
         const credits = Number(participant && participant.credits || 0);
+        const decayableCredits = Number(participant && participant.decayable_credits || 0);
         const reserved = Number(participant && participant.reserved_rcredits || 0);
         summary.innerHTML = `
-            <div class="helper-balance-card"><span>credit</span><strong>${credits}</strong><small>用于获得互助</small></div>
+            <div class="helper-balance-card"><span>credit</span><strong>${credits}</strong><small>${decayableCredits > 0 ? `助力余额 ${decayableCredits}（每月衰减）` : '用于获得互助'}</small></div>
             <div class="helper-balance-card"><span>rcredit</span><strong>${rcredits}</strong><small>${reserved > 0 ? `冻结 ${reserved}` : '可兑换 LDC'}</small></div>
         `;
     }
