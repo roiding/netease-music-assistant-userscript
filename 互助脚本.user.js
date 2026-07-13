@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.7.9
-// @description  V3.7.9：自动排除普通用户无法播放的 VIP 或付费歌曲。
+// @version      3.8.0
+// @description  V3.8.0：新增短歌 credit 惩罚与 rcredit 贡献门槛、每日上限保护。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.7.9';
+    const CURRENT_VERSION = '3.8.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -625,6 +625,7 @@
         if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
         if (code === 'helper_credit_held') return '你本月已达到被互助上限，且当前额度已达到留存上限，本月暂不再给你派发新的互助任务。';
         if (code === 'helper_credit_overflow') return '你的当前额度过高，系统暂时不会再给你派发新的互助任务。';
+        if (code === 'rcredit_daily_limit_reached') return '今天的 rcredit 额度已经用完，系统已暂停派单，明天自动恢复。';
         if (code === 'pool_empty') return '当前没有可用的互助目标。';
         if (code === 'targets_out_of_credit') return '当前互助池里的目标额度已经耗尽。';
         if (code === 'targets_busy') return '当前可用目标都已有进行中的互助任务。';
@@ -1614,6 +1615,8 @@
         const reservedRcredits = Number(state.reserved_rcredits || 0);
         const monthlyReceived = Number(state.monthly_received_help_count || 0);
         const monthlyLimit = Number(state.monthly_received_limit || 0);
+        const monthlyCompletedCreditUnits = Number(state.monthly_completed_credit_units || 0);
+        const rcreditContributionTarget = Number(state.rcredit_monthly_contribution_target || 0);
         const monthlyLine = monthlyLimit > 0
             ? `本月已收到: ${monthlyReceived} / ${monthlyLimit}${state.monthly_cap_reached ? '（已封顶）' : ''}`
             : '';
@@ -1624,8 +1627,10 @@
             ? `当前接任务额度上限: ${Number(state.helper_dispatch_credit_limit || 0)}（已暂停接新任务）`
             : '';
         const rewardLine = state.rcredit_reward_active
-            ? '本月已封顶：继续助力将赚取 rcredit'
-            : '';
+            ? 'rcredit 资格已解锁：达到每日限额后暂停派单，次日自动恢复'
+            : (state.monthly_cap_reached
+                ? `rcredit 解锁进度: 本月贡献 ${monthlyCompletedCreditUnits} / ${rcreditContributionTarget} credit`
+                : '');
         const consumerLine = currentUserState && !isCurrentUserHelper()
             ? '消费用户可提交目标和充值 credit；开通 Helper 后才能助力他人并赚取奖励。'
             : '';
@@ -1939,6 +1944,14 @@
                 }, retryAfterSeconds * 1000);
                 return;
             }
+            if (data.error === 'rcredit_daily_limit_reached') {
+                const retryAfterSeconds = Math.max(60, Number(data.retryAfterSeconds || 3600));
+                infoEl.innerText = `${getPayloadErrorText(data, 'rcredit_daily_limit_reached')}\n约 ${Math.ceil(retryAfterSeconds / 3600)} 小时后自动重试`;
+                setTimeout(() => {
+                    if (isHelperRunning) playNext();
+                }, retryAfterSeconds * 1000);
+                return;
+            }
             if (isJoinBlockingError(data.error)) {
                 stopHelper();
                 infoEl.innerText = getPayloadErrorText(data, data.error);
@@ -1956,9 +1969,10 @@
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
             const creditCost = Number(data.creditCost || 1);
+            const rewardCredit = Number(data.rewardCredit || creditCost);
             const earnsRcredit = !!(data.participant && data.participant.rcredit_reward_active);
             const rcreditRate = Number(economyState && economyState.rewards && economyState.rewards.rcreditsPerCredit || 1);
-            const rewardAmount = earnsRcredit ? Math.floor(creditCost * rcreditRate) : creditCost;
+            const rewardAmount = earnsRcredit ? Math.floor(rewardCredit * rcreditRate) : rewardCredit;
             const rewardLabel = earnsRcredit ? 'rcredit' : 'credit';
             const expectedDurationMs = Number(data.targetDurationMs || 0);
             try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
