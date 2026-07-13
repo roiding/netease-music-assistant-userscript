@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.1
-// @description  V3.8.1：新增助力 credit 每月衰减，充值、CDK 与空投 credit 保持永久。
+// @version      3.8.2
+// @description  V3.8.2：rcredit 兑换仅月底最后 7 天开放，LDC 充值最低 50。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.1';
+    const CURRENT_VERSION = '3.8.2';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -637,6 +637,7 @@
         if (code === 'invalid_topup_amount_precision') return 'LDC 充值金额最多支持两位小数。';
         if (code === 'topup_amount_out_of_range') return '充值金额不在当前允许范围内。';
         if (code === 'rcredit_redemption_disabled') return 'rcredit 兑换 LDC 暂未开放。';
+        if (code === 'rcredit_redemption_window_closed') return 'rcredit 兑换申请仅在每月最后 7 天开放。';
         if (code === 'redemption_amount_too_small') return '兑换的 rcredit 数量低于最低要求。';
         if (code === 'redemption_net_amount_too_small') return '扣除手续费后的 LDC 金额低于最低要求。';
         if (code === 'redemption_already_pending') return '你已有一笔待处理的兑换申请。';
@@ -1651,11 +1652,18 @@
         if (!actions || !summary || !topupButton || !redeemButton) return;
         const topupEnabled = !!(economyState && economyState.topup && economyState.topup.enabled);
         const redemptionEnabled = !!(economyState && economyState.redemption && economyState.redemption.enabled);
+        const redemptionWindow = economyState && economyState.redemption && economyState.redemption.submissionWindow;
+        const redemptionWindowOpen = !redemptionWindow || redemptionWindow.open !== false;
         const rcredits = Number(participant && participant.rcredits || 0);
         const canRedeem = isCurrentUserHelper() && redemptionEnabled;
         actions.style.display = (topupEnabled || canRedeem || rcredits > 0) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
         redeemButton.style.display = canRedeem ? 'block' : 'none';
+        redeemButton.disabled = canRedeem && !redemptionWindowOpen;
+        redeemButton.innerText = redemptionWindowOpen ? '兑换 LDC' : '月底开放兑换';
+        redeemButton.title = redemptionWindowOpen || !redemptionWindow
+            ? ''
+            : `本月开放时间：${redemptionWindow.startDate} 至 ${redemptionWindow.endDate}`;
         const credits = Number(participant && participant.credits || 0);
         const decayableCredits = Number(participant && participant.decayable_credits || 0);
         const reserved = Number(participant && participant.reserved_rcredits || 0);
@@ -1732,6 +1740,9 @@
     async function startRcreditRedemption() {
         const config = economyState && economyState.redemption;
         if (!config || !config.enabled) return alert(getErrorText('rcredit_redemption_disabled'));
+        if (config.submissionWindow && config.submissionWindow.open === false) {
+            return alert(`rcredit 兑换申请仅在每月最后 7 天开放。\n本月开放时间：${config.submissionWindow.startDate} 至 ${config.submissionWindow.endDate}`);
+        }
         if (!currentMerchantCredential || !currentMerchantCredential.bound) {
             activateHelperTab('wallet');
             updateMerchantCredentialControls();
