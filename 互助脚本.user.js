@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.3
-// @description  V3.8.3：修复带付费属性但普通用户可播放歌曲被误判的问题。
+// @version      3.8.4
+// @description  V3.8.4：匿名核查歌曲公共播放权限，并在播放卡住时自动上报后端复核。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.3';
+    const CURRENT_VERSION = '3.8.4';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -42,6 +42,7 @@
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
     const TAB_LOCK_STALE_MS = 15000;
+    const PLAYBACK_STALL_REPORT_MS = 30 * 1000;
 
     let isHelperRunning = false;
     let monitorTimer = null;
@@ -674,7 +675,7 @@
     function isDisabledPlayTitle(title) {
         const text = String(title || '').trim();
         if (!text) return false;
-        return /暂时无法使用|版权保护|无法播放|不可播放|仅限|地区/.test(text);
+        return /暂时无法使用|版权保护|无法播放|不可播放|仅限|地区|VIP|会员|开通|购买|付费|试听/.test(text);
     }
 
     function detectTargetPageIssue(targetSongId = '') {
@@ -683,11 +684,29 @@
             const doc = frame && frame.contentDocument;
             if (!doc) return null;
 
-            const disabledPlay = doc.querySelector('.u-btni-play-dis');
-            if (disabledPlay && isDisabledPlayTitle(disabledPlay.getAttribute('title') || disabledPlay.textContent || '')) {
+            const disabledPlay = doc.querySelector([
+                '.u-btni-play-dis',
+                '.u-btni-vip',
+                '[data-res-action="play"][aria-disabled="true"]',
+                '[data-res-action="play"].disabled',
+                '[class*="play"][class*="disabled"]',
+            ].join(', ')) || Array.from(doc.querySelectorAll('[class*="play"], [data-res-action="play"]'))
+                .find((node) => isDisabledPlayTitle(
+                    node.getAttribute('title')
+                    || node.getAttribute('aria-label')
+                    || node.textContent
+                    || '',
+                ));
+            if (disabledPlay) {
+                const disabledTitle = String(
+                    disabledPlay.getAttribute('title')
+                    || disabledPlay.getAttribute('aria-label')
+                    || disabledPlay.textContent
+                    || '播放按钮不可用',
+                ).trim();
                 return {
                     reason: 'page_unplayable',
-                    title: String(disabledPlay.getAttribute('title') || disabledPlay.textContent || '').trim(),
+                    title: disabledTitle,
                 };
             }
 
@@ -935,8 +954,7 @@
 
     async function fetchSongDuration(songId) {
         try {
-            const normalizedSongId = encodeURIComponent(String(songId || '').trim());
-            const res = await fetch(`/api/v3/song/detail?c=${encodeURIComponent(JSON.stringify([{ id: Number(songId) }]))}`, { credentials: 'include' });
+            const res = await fetch(`/api/v3/song/detail?c=${encodeURIComponent(JSON.stringify([{ id: Number(songId) }]))}`, { credentials: 'omit' });
             const data = safeJSON(await res.text());
             const songs = Array.isArray(data && data.songs) ? data.songs : [];
             const privileges = Array.isArray(data && data.privileges) ? data.privileges : [];
@@ -958,16 +976,12 @@
             }
             return { durationMs: Math.floor(durationMs) };
         } catch (e) {}
-
-        const currentSongId = extractSongId(window.location.hash);
-        const { dur } = getProgress();
-        if (currentSongId === String(songId) && dur > 0) return { durationMs: dur };
         return { durationMs: 0 };
     }
 
     async function fetchAlbumTracks(albumId) {
         try {
-            const res = await fetch(`/api/v1/album/${albumId}`, { credentials: 'include' });
+            const res = await fetch(`/api/v1/album/${albumId}`, { credentials: 'omit' });
             const data = safeJSON(await res.text());
             const songs = Array.isArray(data && data.songs) ? data.songs : [];
             if ((data && data.resourceState === false) || Number(data && data.code) === 404 || songs.length === 0) {
@@ -2013,23 +2027,21 @@
             if (!forcePlayed || !forcePlayed.ok) {
                 const issueReason = forcePlayed && forcePlayed.reason ? forcePlayed.reason : 'play_timeout';
                 const issueTitle = forcePlayed && forcePlayed.title ? forcePlayed.title : '';
-                if (issueReason === 'page_unplayable' || issueReason === 'page_not_found') {
-                    const issueText = issueReason === 'page_not_found'
-                        ? '目标歌曲页面无效，已上报服务器核查...'
-                        : '目标歌曲当前不可播放，已上报服务器核查...';
-                    infoEl.innerText = `${issueText}\n目标歌曲: ${expectedSongId}`;
-                    const report = await reportPlayIssue(jobId, sourceMusicId, `song:${expectedSongId}`, issueReason, issueTitle);
-                    if (report && report.participant) updateParticipantInfo(report.participant);
-                    setTimeout(playNext, 1500);
-                    return;
-                }
-                infoEl.innerText = `目标歌曲加载失败，准备重试...\n目标歌曲: ${expectedSongId}`;
-                setTimeout(playNext, 3000);
+                const issueText = issueReason === 'page_not_found'
+                    ? '目标歌曲页面无效，已上报服务器核查...'
+                    : (issueReason === 'page_unplayable'
+                        ? '目标歌曲当前不可播放，已上报服务器核查...'
+                        : '目标歌曲加载超时，已上报服务器核查...');
+                infoEl.innerText = `${issueText}\n目标歌曲: ${expectedSongId}`;
+                const report = await reportPlayIssue(jobId, sourceMusicId, `song:${expectedSongId}`, issueReason, issueTitle);
+                if (report && report.participant) updateParticipantInfo(report.participant);
+                setTimeout(playNext, 1500);
                 return;
             }
             let startTime = Date.now(), hasTriggered = false, finished = false;
             let prevCur = 0, prevDur = 0, prevTickAt = 0, localListenedMs = 0, suspiciousJumps = 0;
             let mismatchTicks = 0, lastRetargetAt = 0, retargeting = false;
+            let lastPlaybackProgressAt = startTime;
             monitorTimer = setInterval(async () => {
                 if (!isHelperRunning || finished) return;
                 const { cur, dur, state } = getProgress();
@@ -2084,6 +2096,26 @@
                 const playbackRate = getPlaybackRate();
                 const playbackRateInvalid = state === 'play' && playbackRate > 1.05;
                 const listenCeilingMs = Math.max(expectedDurationMs || 0, dur || 0);
+
+                if (state === 'play' && cur > prevCur + 100) {
+                    lastPlaybackProgressAt = now;
+                }
+
+                if (elapsed >= PLAYBACK_STALL_REPORT_MS && now - lastPlaybackProgressAt >= PLAYBACK_STALL_REPORT_MS) {
+                    finished = true;
+                    clearInterval(monitorTimer);
+                    infoEl.innerText = `目标歌曲持续无法播放，已上报服务器核查...\n目标歌曲: ${expectedSongId}`;
+                    const report = await reportPlayIssue(
+                        jobId,
+                        sourceMusicId,
+                        `song:${expectedSongId}`,
+                        'playback_stalled',
+                        detectTargetPageIssue(expectedSongId)?.title || '',
+                    );
+                    if (report && report.participant) updateParticipantInfo(report.participant);
+                    setTimeout(playNext, 1500);
+                    return;
+                }
 
                 if (prevTickAt > 0) {
                     const wallDelta = Math.max(0, now - prevTickAt);
