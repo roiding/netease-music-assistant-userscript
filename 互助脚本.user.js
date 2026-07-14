@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.2
-// @description  V3.8.2：rcredit 兑换仅月底最后 7 天开放，LDC 充值最低 50。
+// @version      3.8.3
+// @description  V3.8.3：修复带付费属性但普通用户可播放歌曲被误判的问题。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.2';
+    const CURRENT_VERSION = '3.8.3';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -922,14 +922,15 @@
     }
 
     function isUnpaidRestrictedSong(song, privilege) {
+        if (privilege && privilege.pl != null && privilege.pl !== '') {
+            const playableBitrate = Number(privilege.pl);
+            if (Number.isFinite(playableBitrate)) return playableBitrate <= 0;
+        }
+
         const feeValue = privilege && privilege.fee != null ? privilege.fee : (song && song.fee);
         const fee = Number(feeValue || 0);
         const payed = Number(privilege && privilege.payed || 0);
-        if (Number.isFinite(fee) && fee > 0 && payed <= 0) return true;
-
-        if (!privilege || privilege.pl == null || privilege.pl === '') return false;
-        const playableBitrate = Number(privilege.pl);
-        return Number.isFinite(playableBitrate) && playableBitrate <= 0;
+        return Number.isFinite(fee) && fee > 0 && payed <= 0;
     }
 
     async function fetchSongDuration(songId) {
