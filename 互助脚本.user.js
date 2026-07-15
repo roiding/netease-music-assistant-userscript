@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.4
-// @description  V3.8.4：匿名核查歌曲公共播放权限，并在播放卡住时自动上报后端复核。
+// @version      3.8.5
+// @description  V3.8.5：优化播放进度识别，避免播放器状态波动造成重复取消。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.4';
+    const CURRENT_VERSION = '3.8.5';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -2094,10 +2094,10 @@
                 mismatchTicks = 0;
 
                 const playbackRate = getPlaybackRate();
-                const playbackRateInvalid = state === 'play' && playbackRate > 1.05;
+                const playbackRateInvalid = playbackRate > 1.05;
                 const listenCeilingMs = Math.max(expectedDurationMs || 0, dur || 0);
 
-                if (state === 'play' && cur > prevCur + 100) {
+                if (cur > prevCur + 100) {
                     lastPlaybackProgressAt = now;
                 }
 
@@ -2124,7 +2124,7 @@
                         const progressDelta = cur - prevCur;
                         if (progressDelta > allowedProgress) {
                             suspiciousJumps += 1;
-                        } else if (state === 'play' && !playbackRateInvalid) {
+                        } else if (progressDelta > 0 && !playbackRateInvalid) {
                             const validListenDelta = Math.max(0, Math.min(wallDelta, progressDelta));
                             localListenedMs += validListenDelta;
                         }
