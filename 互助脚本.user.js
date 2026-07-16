@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.7
-// @description  V3.8.7：空任务线性退避、短歌曲消耗提示与阶梯充值赠送。
+// @version      3.8.8
+// @description  V3.8.8：修复可播放歌曲被页面按钮和加载状态误报为不可播放。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.7';
+    const CURRENT_VERSION = '3.8.8';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -45,7 +45,7 @@
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
     const TAB_LOCK_STALE_MS = 15000;
-    const PLAYBACK_STALL_REPORT_MS = 30 * 1000;
+    const PLAYBACK_STALL_REPORT_MS = 60 * 1000;
     const NO_TASK_RETRY_BASE_MS = 30 * 1000;
     const SHORT_TRACK_PENALTY_FALLBACK_SECONDS = 60;
 
@@ -451,6 +451,16 @@
         const p = getSafePlayer();
         try { if (p && typeof p.getDuration === 'function' && p.getDuration() > 0) return { cur: p.getPosition(), dur: p.getDuration(), state: p.getState ? p.getState() : '' }; } catch(e) {}
         try {
+            const audio = document.querySelector('audio');
+            if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
+                return {
+                    cur: Math.max(0, Number(audio.currentTime || 0) * 1000),
+                    dur: Number(audio.duration) * 1000,
+                    state: audio.paused ? 'stop' : 'play',
+                };
+            }
+        } catch(e) {}
+        try {
             const timeEl = document.querySelector('.g-btmbar .time');
             if (timeEl) {
                 const parts = timeEl.innerText.split('/').map(s => s.trim());
@@ -483,8 +493,14 @@
 
     function getCurrentPlayingSongId() {
         try {
-            const currentLink = document.querySelector('.m-playbar .words .name') || document.querySelector('.g-btmbar a[href*="song?id="]');
-            return currentLink ? extractSongId(currentLink.getAttribute('href')) : '';
+            const currentLink = document.querySelector('.m-playbar .words a[href*="song?id="]')
+                || document.querySelector('.m-playbar .words .name[href*="song?id="]')
+                || document.querySelector('.g-btmbar a[href*="song?id="]');
+            const fromHref = currentLink ? extractSongId(currentLink.getAttribute('href')) : '';
+            if (fromHref) return fromHref;
+            const currentData = document.querySelector('.m-playbar .words [data-res-id], .g-btmbar [data-res-id]');
+            const fromData = String(currentData && currentData.getAttribute('data-res-id') || '').trim();
+            return /^\d+$/.test(fromData) ? fromData : '';
         } catch (e) {}
         return '';
     }
@@ -550,10 +566,11 @@
         }
     }
 
-    async function forcePlayTargetSong(targetSongId) {
+    async function forcePlayTargetSong(targetSongId, expectedDurationMs = 0) {
         if (!targetSongId) return false;
         ensureTargetSong(targetSongId);
-        const deadline = Date.now() + 15000;
+        const deadline = Date.now() + 20000;
+        let previousPositionMs = 0;
         while (Date.now() < deadline) {
             const currentHashSongId = extractSongId(window.location.hash);
             if (currentHashSongId !== String(targetSongId)) {
@@ -569,9 +586,18 @@
 
             const clicked = triggerIframePlay();
             await wait(clicked ? 1200 : 600);
-            if (getCurrentPlayingSongId() === String(targetSongId)) {
+            const currentPlayingSongId = getCurrentPlayingSongId();
+            if (currentPlayingSongId === String(targetSongId)) {
                 return { ok: true };
             }
+            const progress = getProgress();
+            const durationMatches = Number(expectedDurationMs || 0) <= 0
+                || (progress.dur > 0 && Math.abs(progress.dur - Number(expectedDurationMs)) <= Math.max(12000, Number(expectedDurationMs) * 0.12));
+            const progressAdvanced = progress.cur > previousPositionMs + 100;
+            if (!currentPlayingSongId && durationMatches && progress.dur > 0 && (progress.state === 'play' || progressAdvanced)) {
+                return { ok: true };
+            }
+            previousPositionMs = Math.max(previousPositionMs, Number(progress.cur || 0));
         }
         const timeoutIssue = detectTargetPageIssue(targetSongId);
         if (timeoutIssue) {
@@ -808,11 +834,11 @@
 
             const disabledPlay = doc.querySelector([
                 '.u-btni-play-dis',
-                '.u-btni-vip',
                 '[data-res-action="play"][aria-disabled="true"]',
                 '[data-res-action="play"].disabled',
-                '[class*="play"][class*="disabled"]',
-            ].join(', ')) || Array.from(doc.querySelectorAll('[class*="play"], [data-res-action="play"]'))
+                '.u-btni-play.disabled',
+                '.u-btn2-2.disabled',
+            ].join(', ')) || Array.from(doc.querySelectorAll('.u-btni-play, .u-btn2-2, [data-res-action="play"]'))
                 .find((node) => isDisabledPlayTitle(
                     node.getAttribute('title')
                     || node.getAttribute('aria-label')
@@ -851,17 +877,6 @@
                 }
             }
 
-            const playButton = doc.querySelector('.u-btni-play, [data-res-action="play"], #playall, .u-btn2-2');
-            const frameLocation = frame && frame.contentWindow && frame.contentWindow.location
-                ? (frame.contentWindow.location.hash || frame.contentWindow.location.href || '')
-                : '';
-            const pageSongId = extractSongId(frameLocation) || extractSongId(window.location.hash);
-            if (targetSongId && pageSongId === String(targetSongId) && !playButton) {
-                return {
-                    reason: 'page_not_found',
-                    title: '目标页面没有可用播放入口',
-                };
-            }
         } catch (e) {}
         return null;
     }
@@ -2215,7 +2230,7 @@
             ensureTargetSong(expectedSongId);
             await wait(600);
             await clearPlayQueueBestEffort(expectedSongId);
-            const forcePlayed = await forcePlayTargetSong(expectedSongId);
+            const forcePlayed = await forcePlayTargetSong(expectedSongId, expectedDurationMs);
             if (!forcePlayed || !forcePlayed.ok) {
                 const issueReason = forcePlayed && forcePlayed.reason ? forcePlayed.reason : 'play_timeout';
                 const issueTitle = forcePlayed && forcePlayed.title ? forcePlayed.title : '';
@@ -2254,7 +2269,7 @@
                         lastRetargetAt = now;
                         retargeting = true;
                         try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
-                        const corrected = await forcePlayTargetSong(expectedSongId);
+                        const corrected = await forcePlayTargetSong(expectedSongId, expectedDurationMs);
                         retargeting = false;
                         if ((!corrected || !corrected.ok) && mismatchTicks >= 6) {
                             if (corrected && (corrected.reason === 'page_unplayable' || corrected.reason === 'page_not_found')) {
