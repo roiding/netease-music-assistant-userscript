@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.6
-// @description  V3.8.6：credit CDK 领取增加脚本身份与互助目标校验。
+// @version      3.8.7
+// @description  V3.8.7：空任务线性退避、短歌曲消耗提示与阶梯充值赠送。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.6';
+    const CURRENT_VERSION = '3.8.7';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -46,10 +46,15 @@
     const TAB_LOCK_HEARTBEAT_MS = 5000;
     const TAB_LOCK_STALE_MS = 15000;
     const PLAYBACK_STALL_REPORT_MS = 30 * 1000;
+    const NO_TASK_RETRY_BASE_MS = 30 * 1000;
+    const SHORT_TRACK_PENALTY_FALLBACK_SECONDS = 60;
 
     let isHelperRunning = false;
     let monitorTimer = null;
     let joinTimer = null;
+    let nextJobRetryTimer = null;
+    let consecutiveNoTaskCount = 0;
+    let nextRequestInFlight = false;
     let authConfig = null;
     let isDragging = false;
     let activeJoinState = null;
@@ -757,6 +762,36 @@
         if (issue && issue.message) return issue.message;
         if (notice && notice.message) return notice.message;
         return '';
+    }
+
+    function getShortTrackPenaltyNotice(musicMeta) {
+        if (!musicMeta || typeof musicMeta !== 'object') return '';
+        const trackPricing = economyState && economyState.trackPricing || {};
+        const thresholdSeconds = Math.max(
+            30,
+            Number(trackPricing.shortTrackThresholdSeconds || SHORT_TRACK_PENALTY_FALLBACK_SECONDS),
+        );
+        const multiplier = Math.max(1, Number(trackPricing.shortTrackMultiplier || 2));
+        if (multiplier <= 1) return '';
+        const thresholdMs = thresholdSeconds * 1000;
+        const durationMs = Number(musicMeta.durationMs || 0);
+        if (durationMs > 0 && durationMs <= thresholdMs) {
+            return `该歌曲时长不超过 ${thresholdSeconds} 秒，被互助时将按 ${multiplier} 倍消耗 credit；助力者仍按歌曲实际时长获得奖励。`;
+        }
+        const tracks = Array.isArray(musicMeta.tracks) ? musicMeta.tracks : [];
+        const penalizedCount = tracks.filter((track) => {
+            const trackDurationMs = Number(track && track.durationMs || 0);
+            return trackDurationMs > 0 && trackDurationMs <= thresholdMs;
+        }).length;
+        if (penalizedCount > 0) {
+            return `该专辑有 ${penalizedCount} 首歌曲不超过 ${thresholdSeconds} 秒；随机到这些歌曲时将按 ${multiplier} 倍消耗 credit。`;
+        }
+        return '';
+    }
+
+    function notifyShortTrackPenalty(musicMeta) {
+        const notice = getShortTrackPenaltyNotice(musicMeta);
+        if (notice) window.alert(`短歌曲消耗提示\n\n${notice}`);
     }
 
     function isDisabledPlayTitle(title) {
@@ -1815,6 +1850,30 @@
         alert('Linux.do 收款应用已绑定。');
     }
 
+    function selectTopupBonusTier(config, amountLdc) {
+        const amount = Number(amountLdc || 0);
+        const tiers = Array.isArray(config && config.bonusTiers) ? config.bonusTiers : [];
+        return tiers
+            .filter((tier) => amount >= Number(tier && tier.minAmountLdc || Infinity))
+            .sort((left, right) => Number(right.minAmountLdc || 0) - Number(left.minAmountLdc || 0))[0] || null;
+    }
+
+    function estimateTopupCredits(config, amountLdc) {
+        const amount = Number(amountLdc || 0);
+        const baseRate = Number(config && (config.baseCreditsPerLdc || config.creditsPerLdc) || 0);
+        const feeBps = Number(config && config.feeBps || 0);
+        const baseCreditAmount = Math.floor(amount * baseRate * (10000 - feeBps) / 10000);
+        const tier = selectTopupBonusTier(config, amount);
+        const bonusPercent = Number(tier && tier.bonusPercent || 0);
+        const bonusCreditAmount = Math.floor(baseCreditAmount * bonusPercent / 100);
+        return {
+            baseCreditAmount,
+            bonusCreditAmount,
+            creditAmount: baseCreditAmount + bonusCreditAmount,
+            tier,
+        };
+    }
+
     async function startCreditTopup() {
         const config = economyState && economyState.topup;
         if (!config || !config.enabled) return alert(getErrorText('credit_topup_disabled'));
@@ -1822,15 +1881,21 @@
             activateHelperTab('help');
             return alert(getErrorText('topup_target_required'));
         }
+        const bonusLines = (Array.isArray(config.bonusTiers) ? config.bonusTiers : []).map((tier) => (
+            `满 ${tier.minAmountLdc} LDC：赠送 ${tier.bonusPercent}%`
+        ));
         const amountLdc = window.prompt(
-            `输入充值金额（${config.minAmountLdc}-${config.maxAmountLdc} LDC）\n当前比例：1 LDC = ${config.creditsPerLdc} credit`,
+            `输入充值金额（${config.minAmountLdc}-${config.maxAmountLdc} LDC）\n基础比例：1 LDC = ${config.baseCreditsPerLdc || config.creditsPerLdc} credit${bonusLines.length ? `\n\n阶梯赠送（取最高一档，不叠加）：\n${bonusLines.join('\n')}` : ''}`,
             config.minAmountLdc,
         );
         if (amountLdc === null) return;
         const amount = Number(amountLdc);
         if (!Number.isFinite(amount) || amount <= 0) return alert(getErrorText('invalid_topup_amount'));
-        const estimatedCredits = Math.floor(amount * Number(config.creditsPerLdc || 0) * (10000 - Number(config.feeBps || 0)) / 10000);
-        if (!window.confirm(`支付 ${amountLdc} LDC，预计到账 ${estimatedCredits} credit。继续吗？`)) return;
+        const quote = estimateTopupCredits(config, amount);
+        const bonusText = quote.bonusCreditAmount > 0
+            ? `（基础 ${quote.baseCreditAmount} + 赠送 ${quote.bonusCreditAmount}，命中满 ${quote.tier.minAmountLdc} LDC 赠 ${quote.tier.bonusPercent}%）`
+            : `（基础到账 ${quote.baseCreditAmount}，当前金额未命中赠送档位）`;
+        if (!window.confirm(`支付 ${amountLdc} LDC，预计到账 ${quote.creditAmount} credit ${bonusText}。继续吗？`)) return;
         const result = await callAPI('POST', '/wallet/topups', { amountLdc: String(amountLdc) });
         if (!result || isApiErrorPayload(result)) {
             return alert(getPayloadErrorText(result, 'payment_create_failed'));
@@ -1913,6 +1978,7 @@
         activeJoinState = null;
         clearInterval(monitorTimer);
         clearInterval(joinTimer);
+        resetNoTaskRetryState();
         const toggleButton = document.getElementById('toggle-helper');
         const helperInfo = document.getElementById('helper-info');
         if (toggleButton) {
@@ -1947,6 +2013,7 @@
                 }
                 return;
             }
+            notifyShortTrackPenalty(joined.musicMeta || null);
             if (infoEl) {
                 const credits = Number(joined.participant && joined.participant.credits || 0);
                 infoEl.innerText = `互助目标已保存。当前可被互助额度：${credits}。\n消费用户不会接收助力任务，也不会赚取 credit/rcredit。`;
@@ -1959,6 +2026,7 @@
 
     async function startHelper(mid, mtp) {
         isHelperRunning = true;
+        resetNoTaskRetryState();
         activeJoinState = { mid, mtp, musicMeta: null, musicMetaFetchedAt: 0 };
         document.getElementById('toggle-helper').innerText = '停止互助';
         document.getElementById('toggle-helper').style.background = '#666';
@@ -1982,6 +2050,8 @@
             }
             return;
         }
+
+        notifyShortTrackPenalty(activeJoinState && activeJoinState.musicMeta);
 
         joinTimer = setInterval(() => {
             if (!activeJoinState) return;
@@ -2016,6 +2086,7 @@
             document.getElementById('login-status').innerText = `已登录: ${d.loginUser} · ${isCurrentUserHelper() ? 'Helper' : '消费用户'}`;
         }
         if(d && d.participant) updateParticipantInfo(d.participant);
+        if (d && d.ok) d.musicMeta = state.musicMeta || null;
         return d;
     }
 
@@ -2035,11 +2106,44 @@
         return callAPI('POST', '/play/finish', { jobId, playedMs, positionMs, durationMs });
     }
 
+    function clearNextJobRetryTimer() {
+        if (nextJobRetryTimer !== null) {
+            clearTimeout(nextJobRetryTimer);
+            nextJobRetryTimer = null;
+        }
+    }
+
+    function resetNoTaskRetryState() {
+        clearNextJobRetryTimer();
+        consecutiveNoTaskCount = 0;
+    }
+
+    function scheduleNoTaskRetry(infoEl, noTaskText) {
+        clearNextJobRetryTimer();
+        consecutiveNoTaskCount += 1;
+        const retryMs = NO_TASK_RETRY_BASE_MS * consecutiveNoTaskCount;
+        const retrySeconds = Math.ceil(retryMs / 1000);
+        infoEl.innerText = `${noTaskText}\n连续第 ${consecutiveNoTaskCount} 次无任务，${retrySeconds} 秒后重试`;
+        nextJobRetryTimer = setTimeout(() => {
+            nextJobRetryTimer = null;
+            if (isHelperRunning) playNext();
+        }, retryMs);
+    }
+
     async function playNext() {
         if (!isHelperRunning) return;
+        if (nextRequestInFlight) return;
+        clearNextJobRetryTimer();
         clearInterval(monitorTimer);
         const infoEl = document.getElementById('helper-info');
-        const data = await callAPI('GET', '/next');
+        nextRequestInFlight = true;
+        let data;
+        try {
+            data = await callAPI('GET', '/next');
+        } finally {
+            nextRequestInFlight = false;
+        }
+        if (!isHelperRunning) return;
         if(!data) { infoEl.innerText = '服务器连接失败'; return; }
         if (isApiErrorPayload(data)) {
             if (data.participant) updateParticipantInfo(data.participant);
@@ -2080,6 +2184,7 @@
         if (data.participant) updateParticipantInfo(data.participant);
 
         if (data.musicId) {
+            resetNoTaskRetryState();
             const sourceMusicId = data.sourceMusicId || data.musicId;
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
@@ -2257,8 +2362,7 @@
             }, 1000);
         } else {
             const noTaskText = data.message || getErrorText(data.reason || 'targets_temporarily_unavailable') || '暂无可互助目标';
-            infoEl.innerText = `${noTaskText}\n30s 后重试`;
-            setTimeout(playNext, 30000);
+            scheduleNoTaskRetry(infoEl, noTaskText);
         }
     }
 
