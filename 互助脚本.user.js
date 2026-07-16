@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.5
-// @description  V3.8.5：优化播放进度识别，避免播放器状态波动造成重复取消。
+// @version      3.8.6
+// @description  V3.8.6：credit CDK 领取增加脚本身份与互助目标校验。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
 // @match        *://linux.do/latest*
 // @match        *://netease.ran-ding.gq/register*
+// @match        *://netease.ran-ding.gq/credit-cdk*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -24,11 +25,13 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.5';
+    const CURRENT_VERSION = '3.8.6';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
     const REGISTRATION_BRIDGE_SOURCE = 'music-helper-register-bridge';
+    const CREDIT_CDK_BRIDGE_SOURCE = 'music-helper-credit-cdk-bridge';
+    const CREDIT_CDK_PAGE_SOURCE = 'music-helper-credit-cdk-page';
     const REGISTRATION_PROBE_KEY_PREFIX = 'musicHelperRegistrationProbe:';
     const REGISTRATION_PROBE_CONTEXT_EVENT = 'music-helper-register-probe-context';
     const TOKEN_KEY = 'musicHelperToken';
@@ -73,6 +76,14 @@
             return false;
         }
     }
+    function isCreditCdkBridgePage() {
+        try {
+            const serviceOrigin = new URL(API_BASE).origin;
+            return window.location.origin === serviceOrigin && window.location.pathname === '/credit-cdk';
+        } catch (e) {
+            return false;
+        }
+    }
     function isMusicHostPage() {
         return window.location.hostname === 'music.163.com';
     }
@@ -84,6 +95,11 @@
 
     if (isRegistrationBridgePage()) {
         handleRegistrationBridgePage();
+        return;
+    }
+
+    if (isCreditCdkBridgePage()) {
+        handleCreditCdkBridgePage();
         return;
     }
 
@@ -265,6 +281,77 @@
             }
         });
         syncProbeContext();
+    }
+
+    function handleCreditCdkBridgePage() {
+        const pageWindow = getUnsafeWindow();
+
+        const respond = (nonce, payload) => {
+            try {
+                pageWindow.postMessage({
+                    source: CREDIT_CDK_BRIDGE_SOURCE,
+                    type: 'proof-response',
+                    nonce,
+                    payload,
+                }, window.location.origin);
+            } catch (error) {}
+        };
+
+        const requestProof = async (nonce) => {
+            const token = String(GM_getValue(TOKEN_KEY, '') || '').trim();
+            const musicType = String(GM_getValue('myMusicType', 'song') || 'song').trim();
+            const musicId = String(GM_getValue('myMusicId', '') || '').trim();
+            if (!token) {
+                respond(nonce, { installed: true, eligible: false, error: 'script_login_required' });
+                return;
+            }
+            if (!/^(song|album)$/.test(musicType) || !/^\d+$/.test(musicId)) {
+                respond(nonce, { installed: true, eligible: false, error: 'music_target_required' });
+                return;
+            }
+
+            const body = { nonce, localMusicId: `${musicType}:${musicId}` };
+            let currentToken = token;
+            let result = await requestAPI('POST', '/credit-cdk/script-proof', body, currentToken);
+            if (result.status === 401 && result.payload && result.payload.error === 'token_expired') {
+                const refresh = await requestAPI('POST', '/auth/refresh', { token: currentToken }, '');
+                if (refresh.status === 200 && refresh.payload && refresh.payload.token) {
+                    currentToken = refresh.payload.token;
+                    GM_setValue(TOKEN_KEY, currentToken);
+                    GM_setValue(ACCESS_EXPIRES_AT_KEY, String(refresh.payload.access_expires_at || ''));
+                    GM_setValue(REFRESH_EXPIRES_AT_KEY, String(refresh.payload.refresh_expires_at || ''));
+                    result = await requestAPI('POST', '/credit-cdk/script-proof', body, currentToken);
+                }
+            }
+
+            if (result.status !== 200 || !result.payload || !result.payload.proof) {
+                respond(nonce, {
+                    installed: true,
+                    eligible: false,
+                    error: result.payload && result.payload.error ? result.payload.error : 'script_proof_failed',
+                    message: result.payload && result.payload.message ? result.payload.message : '',
+                });
+                return;
+            }
+            respond(nonce, {
+                installed: true,
+                eligible: true,
+                proof: result.payload.proof,
+                musicId: result.payload.musicId,
+                user: result.payload.user,
+            });
+        };
+
+        window.addEventListener('message', (event) => {
+            if (event.source !== pageWindow || event.origin !== window.location.origin) return;
+            const data = event.data;
+            if (!data || data.source !== CREDIT_CDK_PAGE_SOURCE || data.type !== 'request-proof') return;
+            const nonce = String(data.nonce || '').trim();
+            if (!nonce) return;
+            requestProof(nonce).catch(() => {
+                respond(nonce, { installed: true, eligible: false, error: 'script_proof_failed' });
+            });
+        });
     }
 
     function readTabLock() {
