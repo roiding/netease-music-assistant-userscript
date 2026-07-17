@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.8
-// @description  V3.8.8：修复可播放歌曲被页面按钮和加载状态误报为不可播放。
+// @version      3.8.9
+// @description  V3.8.9：修复实际播放正常时被旧播放器进度误报为停滞的问题。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.8';
+    const CURRENT_VERSION = '3.8.9';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -449,15 +449,37 @@
     function getProgress() {
         let cur = 0, dur = 0, state = '';
         const p = getSafePlayer();
-        try { if (p && typeof p.getDuration === 'function' && p.getDuration() > 0) return { cur: p.getPosition(), dur: p.getDuration(), state: p.getState ? p.getState() : '' }; } catch(e) {}
         try {
-            const audio = document.querySelector('audio');
-            if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
+            const audioCandidates = [];
+            if (p && p.audio) audioCandidates.push(p.audio);
+            document.querySelectorAll('audio').forEach((audio) => {
+                if (!audioCandidates.includes(audio)) audioCandidates.push(audio);
+            });
+            const validAudio = (audio) => audio
+                && Number.isFinite(Number(audio.duration))
+                && Number(audio.duration) > 0
+                && Number.isFinite(Number(audio.currentTime));
+            const audio = audioCandidates.find((candidate) => validAudio(candidate) && candidate.paused === false)
+                || audioCandidates.find(validAudio);
+            if (audio) {
                 return {
                     cur: Math.max(0, Number(audio.currentTime || 0) * 1000),
                     dur: Number(audio.duration) * 1000,
                     state: audio.paused ? 'stop' : 'play',
                 };
+            }
+        } catch(e) {}
+        try {
+            if (p && typeof p.getDuration === 'function' && typeof p.getPosition === 'function') {
+                const playerDuration = Number(p.getDuration());
+                const playerPosition = Number(p.getPosition());
+                if (Number.isFinite(playerDuration) && playerDuration > 0 && Number.isFinite(playerPosition)) {
+                    return {
+                        cur: Math.max(0, playerPosition),
+                        dur: playerDuration,
+                        state: p.getState ? p.getState() : '',
+                    };
+                }
             }
         } catch(e) {}
         try {
@@ -2248,9 +2270,10 @@
             let startTime = Date.now(), hasTriggered = false, finished = false;
             let prevCur = 0, prevDur = 0, prevTickAt = 0, localListenedMs = 0, suspiciousJumps = 0;
             let mismatchTicks = 0, lastRetargetAt = 0, retargeting = false;
+            let stallRecoveryAttempts = 0, stallRecovering = false;
             let lastPlaybackProgressAt = startTime;
             monitorTimer = setInterval(async () => {
-                if (!isHelperRunning || finished) return;
+                if (!isHelperRunning || finished || stallRecovering) return;
                 const { cur, dur, state } = getProgress();
                 const now = Date.now();
                 const elapsed = now - startTime;
@@ -2306,12 +2329,29 @@
 
                 if (cur > prevCur + 100) {
                     lastPlaybackProgressAt = now;
+                    stallRecoveryAttempts = 0;
                 }
 
                 if (elapsed >= PLAYBACK_STALL_REPORT_MS && now - lastPlaybackProgressAt >= PLAYBACK_STALL_REPORT_MS) {
+                    if (stallRecoveryAttempts < 1) {
+                        stallRecoveryAttempts += 1;
+                        stallRecovering = true;
+                        infoEl.innerText = `检测到播放进度暂时未更新，正在重新同步播放器...\n目标歌曲: ${expectedSongId}`;
+                        const recovered = await forcePlayTargetSong(expectedSongId, expectedDurationMs);
+                        stallRecovering = false;
+                        if (recovered && recovered.ok) {
+                            const recoveredProgress = getProgress();
+                            prevCur = Number(recoveredProgress.cur || 0);
+                            prevDur = Number(recoveredProgress.dur || 0);
+                            prevTickAt = Date.now();
+                            lastPlaybackProgressAt = prevTickAt;
+                            return;
+                        }
+                    }
                     finished = true;
                     clearInterval(monitorTimer);
-                    infoEl.innerText = `目标歌曲持续无法播放，已上报服务器核查...\n目标歌曲: ${expectedSongId}`;
+                    try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
+                    infoEl.innerText = `播放进度持续 60 秒未变化，恢复失败，已上报服务器核查...\n目标歌曲: ${expectedSongId}`;
                     const report = await reportPlayIssue(
                         jobId,
                         sourceMusicId,
@@ -2320,7 +2360,7 @@
                         detectTargetPageIssue(expectedSongId)?.title || '',
                     );
                     if (report && report.participant) updateParticipantInfo(report.participant);
-                    setTimeout(playNext, 1500);
+                    setTimeout(playNext, 3000);
                     return;
                 }
 
