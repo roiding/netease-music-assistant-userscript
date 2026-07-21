@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.9
-// @description  V3.8.9：修复实际播放正常时被旧播放器进度误报为停滞的问题。
+// @version      3.8.10
+// @description  V3.8.10：修复后台标签页错过歌曲结束时未完成互助的问题。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.9';
+    const CURRENT_VERSION = '3.8.10';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -51,6 +51,7 @@
 
     let isHelperRunning = false;
     let monitorTimer = null;
+    let activePlaybackCleanup = null;
     let joinTimer = null;
     let nextJobRetryTimer = null;
     let consecutiveNoTaskCount = 0;
@@ -446,10 +447,9 @@
         return false;
     }
 
-    function getProgress() {
-        let cur = 0, dur = 0, state = '';
-        const p = getSafePlayer();
+    function getActiveAudioElement() {
         try {
+            const p = getSafePlayer();
             const audioCandidates = [];
             if (p && p.audio) audioCandidates.push(p.audio);
             document.querySelectorAll('audio').forEach((audio) => {
@@ -459,8 +459,19 @@
                 && Number.isFinite(Number(audio.duration))
                 && Number(audio.duration) > 0
                 && Number.isFinite(Number(audio.currentTime));
-            const audio = audioCandidates.find((candidate) => validAudio(candidate) && candidate.paused === false)
-                || audioCandidates.find(validAudio);
+            return audioCandidates.find((candidate) => validAudio(candidate) && candidate.paused === false)
+                || audioCandidates.find(validAudio)
+                || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function getProgress() {
+        let cur = 0, dur = 0, state = '';
+        const p = getSafePlayer();
+        try {
+            const audio = getActiveAudioElement();
             if (audio) {
                 return {
                     cur: Math.max(0, Number(audio.currentTime || 0) * 1000),
@@ -499,13 +510,7 @@
 
     function getPlaybackRate() {
         try {
-            const p = getSafePlayer();
-            if (p && p.audio && Number.isFinite(Number(p.audio.playbackRate))) {
-                return Number(p.audio.playbackRate);
-            }
-        } catch (e) {}
-        try {
-            const audio = document.querySelector('audio');
+            const audio = getActiveAudioElement();
             if (audio && Number.isFinite(Number(audio.playbackRate))) {
                 return Number(audio.playbackRate);
             }
@@ -2013,7 +2018,7 @@
     function stopHelper() {
         isHelperRunning = false;
         activeJoinState = null;
-        clearInterval(monitorTimer);
+        clearPlaybackMonitor();
         clearInterval(joinTimer);
         resetNoTaskRetryState();
         const toggleButton = document.getElementById('toggle-helper');
@@ -2143,6 +2148,18 @@
         return callAPI('POST', '/play/finish', { jobId, playedMs, positionMs, durationMs });
     }
 
+    function clearPlaybackMonitor() {
+        if (monitorTimer !== null) {
+            clearInterval(monitorTimer);
+            monitorTimer = null;
+        }
+        if (activePlaybackCleanup) {
+            const cleanup = activePlaybackCleanup;
+            activePlaybackCleanup = null;
+            try { cleanup(); } catch (e) {}
+        }
+    }
+
     function clearNextJobRetryTimer() {
         if (nextJobRetryTimer !== null) {
             clearTimeout(nextJobRetryTimer);
@@ -2171,7 +2188,7 @@
         if (!isHelperRunning) return;
         if (nextRequestInFlight) return;
         clearNextJobRetryTimer();
-        clearInterval(monitorTimer);
+        clearPlaybackMonitor();
         const infoEl = document.getElementById('helper-info');
         nextRequestInFlight = true;
         let data;
@@ -2272,59 +2289,134 @@
             let mismatchTicks = 0, lastRetargetAt = 0, retargeting = false;
             let stallRecoveryAttempts = 0, stallRecovering = false;
             let lastPlaybackProgressAt = startTime;
-            monitorTimer = setInterval(async () => {
-                if (!isHelperRunning || finished || stallRecovering) return;
-                const { cur, dur, state } = getProgress();
-                const now = Date.now();
-                const elapsed = now - startTime;
-                const currentHashSongId = extractSongId(window.location.hash);
-                const currentPlayingSongId = getCurrentPlayingSongId();
-                const hashMismatch = currentHashSongId && currentHashSongId !== expectedSongId;
-                const playingSongMismatch = currentPlayingSongId && currentPlayingSongId !== expectedSongId;
-                const durationMismatch = expectedDurationMs > 0
-                    && dur > 0
-                    && Math.abs(dur - expectedDurationMs) > Math.max(12000, expectedDurationMs * 0.12);
+            let monitoredAudio = null, endedAudioDurationMs = 0, mediaEnded = false;
+            let monitorTickInFlight = false, rerunMonitorAfterTick = false;
 
-                if (hashMismatch || playingSongMismatch || (elapsed > 8000 && durationMismatch)) {
-                    mismatchTicks += 1;
-                    infoEl.innerText = `当前加载歌曲与任务不一致，正在重新跳转...\n目标歌曲: ${expectedSongId}\n预期时长: ${expectedDurationMs > 0 ? formatTime(expectedDurationMs) : '未知'}`;
-                    if (!retargeting && now - lastRetargetAt > 4000) {
-                        lastRetargetAt = now;
-                        retargeting = true;
-                        try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
-                        const corrected = await forcePlayTargetSong(expectedSongId, expectedDurationMs);
-                        retargeting = false;
-                        if ((!corrected || !corrected.ok) && mismatchTicks >= 6) {
-                            if (corrected && (corrected.reason === 'page_unplayable' || corrected.reason === 'page_not_found')) {
-                                const correctedText = corrected.reason === 'page_not_found'
-                                    ? '目标歌曲页面无效，已上报服务器核查...'
-                                    : '目标歌曲当前不可播放，已上报服务器核查...';
-                                infoEl.innerText = `${correctedText}\n目标歌曲: ${expectedSongId}`;
-                                const report = await reportPlayIssue(jobId, sourceMusicId, `song:${expectedSongId}`, corrected.reason, corrected.title || '');
-                                if (report && report.participant) updateParticipantInfo(report.participant);
-                            }
-                            finished = true;
-                            clearInterval(monitorTimer);
-                            setTimeout(playNext, 3000);
+            const clearEndedListener = () => {
+                if (monitoredAudio) monitoredAudio.removeEventListener('ended', handleAudioEnded);
+                monitoredAudio = null;
+            };
+            const handleAudioEnded = (event) => {
+                const audio = event && event.currentTarget;
+                const durationMs = Number(audio && audio.duration || 0) * 1000;
+                const playingSongId = getCurrentPlayingSongId();
+                if (playingSongId && playingSongId !== expectedSongId) return;
+                if (expectedDurationMs > 0 && durationMs > 0
+                    && Math.abs(durationMs - expectedDurationMs) > Math.max(12000, expectedDurationMs * 0.12)) {
+                    return;
+                }
+                endedAudioDurationMs = durationMs;
+                mediaEnded = true;
+                void monitorPlayback();
+            };
+            const bindEndedListener = () => {
+                const audio = getActiveAudioElement();
+                if (!audio || audio === monitoredAudio) return;
+                clearEndedListener();
+                monitoredAudio = audio;
+                monitoredAudio.addEventListener('ended', handleAudioEnded);
+            };
+            const settleCurrentJob = async (playedMs, positionMs, durationMs) => {
+                if (finished) return;
+                finished = true;
+                clearPlaybackMonitor();
+                try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
+                const result = await finishCurrentJob(jobId, playedMs, positionMs, durationMs);
+                if (result && result.participant) updateParticipantInfo(result.participant);
+                setTimeout(playNext, 2000);
+            };
+            const monitorPlayback = async () => {
+                if (!isHelperRunning || finished || stallRecovering) return;
+                if (monitorTickInFlight) {
+                    if (mediaEnded) rerunMonitorAfterTick = true;
+                    return;
+                }
+                monitorTickInFlight = true;
+                try {
+                    bindEndedListener();
+                    const { cur, dur, state } = getProgress();
+                    const now = Date.now();
+                    const elapsed = now - startTime;
+                    const currentHashSongId = extractSongId(window.location.hash);
+                    const currentPlayingSongId = getCurrentPlayingSongId();
+                    const hashMismatch = currentHashSongId && currentHashSongId !== expectedSongId;
+                    const playingSongMismatch = currentPlayingSongId && currentPlayingSongId !== expectedSongId;
+                    const durationMismatch = expectedDurationMs > 0
+                        && dur > 0
+                        && Math.abs(dur - expectedDurationMs) > Math.max(12000, expectedDurationMs * 0.12);
+                    const playbackRate = getPlaybackRate();
+                    const playbackRateInvalid = playbackRate > 1.05;
+                    const wallDelta = prevTickAt > 0 ? Math.max(0, now - prevTickAt) : 0;
+                    const boundaryDurationMs = endedAudioDurationMs || prevDur || dur || expectedDurationMs;
+                    const remainingFromPreviousMs = boundaryDurationMs > 0
+                        ? Math.max(0, boundaryDurationMs - prevCur)
+                        : 0;
+                    const wrappedAfterNaturalEnd = !mediaEnded
+                        && prevTickAt > 0
+                        && prevDur > 0
+                        && prevCur > 0
+                        && prevCur - cur > 15000
+                        && remainingFromPreviousMs <= wallDelta * 1.5 + 3000;
+
+                    if (mediaEnded || wrappedAfterNaturalEnd) {
+                        let boundaryListenedMs = localListenedMs;
+                        if (prevTickAt > 0 && !playbackRateInvalid) {
+                            boundaryListenedMs += Math.max(0, Math.min(wallDelta, remainingFromPreviousMs));
+                        }
+                        if (boundaryDurationMs > 0) {
+                            boundaryListenedMs = Math.min(boundaryListenedMs, boundaryDurationMs);
+                        }
+                        const requiredListenMs = Number(data.requiredListenMs
+                            || Math.max(20000, Math.floor(boundaryDurationMs * 0.75)));
+                        if (boundaryListenedMs >= requiredListenMs
+                            && suspiciousJumps <= 1
+                            && !playbackRateInvalid) {
+                            await settleCurrentJob(
+                                boundaryListenedMs,
+                                boundaryDurationMs,
+                                boundaryDurationMs,
+                            );
                             return;
                         }
                     }
-                    if (mismatchTicks >= 12) {
-                        finished = true;
-                        clearInterval(monitorTimer);
-                        setTimeout(playNext, 3000);
+
+                    if (hashMismatch || playingSongMismatch || (elapsed > 8000 && durationMismatch)) {
+                        mismatchTicks += 1;
+                        infoEl.innerText = `当前加载歌曲与任务不一致，正在重新跳转...\n目标歌曲: ${expectedSongId}\n预期时长: ${expectedDurationMs > 0 ? formatTime(expectedDurationMs) : '未知'}`;
+                        if (!retargeting && now - lastRetargetAt > 4000) {
+                            lastRetargetAt = now;
+                            retargeting = true;
+                            try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
+                            const corrected = await forcePlayTargetSong(expectedSongId, expectedDurationMs);
+                            retargeting = false;
+                            if ((!corrected || !corrected.ok) && mismatchTicks >= 6) {
+                                if (corrected && (corrected.reason === 'page_unplayable' || corrected.reason === 'page_not_found')) {
+                                    const correctedText = corrected.reason === 'page_not_found'
+                                        ? '目标歌曲页面无效，已上报服务器核查...'
+                                        : '目标歌曲当前不可播放，已上报服务器核查...';
+                                    infoEl.innerText = `${correctedText}\n目标歌曲: ${expectedSongId}`;
+                                    const report = await reportPlayIssue(jobId, sourceMusicId, `song:${expectedSongId}`, corrected.reason, corrected.title || '');
+                                    if (report && report.participant) updateParticipantInfo(report.participant);
+                                }
+                                finished = true;
+                                clearPlaybackMonitor();
+                                setTimeout(playNext, 3000);
+                                return;
+                            }
+                        }
+                        if (mismatchTicks >= 12) {
+                            finished = true;
+                            clearPlaybackMonitor();
+                            setTimeout(playNext, 3000);
+                        }
+                        prevCur = 0;
+                        prevDur = 0;
+                        prevTickAt = 0;
+                        return;
                     }
-                    prevCur = 0;
-                    prevDur = 0;
-                    prevTickAt = 0;
-                    localListenedMs = 0;
-                    return;
-                }
 
                 mismatchTicks = 0;
 
-                const playbackRate = getPlaybackRate();
-                const playbackRateInvalid = playbackRate > 1.05;
                 const listenCeilingMs = Math.max(expectedDurationMs || 0, dur || 0);
 
                 if (cur > prevCur + 100) {
@@ -2349,7 +2441,7 @@
                         }
                     }
                     finished = true;
-                    clearInterval(monitorTimer);
+                    clearPlaybackMonitor();
                     try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
                     infoEl.innerText = `播放进度持续 60 秒未变化，恢复失败，已上报服务器核查...\n目标歌曲: ${expectedSongId}`;
                     const report = await reportPlayIssue(
@@ -2400,21 +2492,26 @@
                         && suspiciousJumps <= 1
                         && !playbackRateInvalid;
                     if (songFinished) {
-                        finished = true;
-                        clearInterval(monitorTimer);
-                        try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
-                        const result = await finishCurrentJob(jobId, displayListenedMs, cur, dur);
-                        if (result && result.participant) updateParticipantInfo(result.participant);
-                        setTimeout(playNext, 2000);
+                        await settleCurrentJob(displayListenedMs, cur, dur);
                     }
                 } else {
                     infoEl.innerText = `正在努力加载...`;
                     if (elapsed > 20000) document.getElementById('manual-btn').style.display = 'block';
                 }
-                prevCur = cur;
-                prevDur = dur;
-                prevTickAt = now;
-            }, 1000);
+                    prevCur = cur;
+                    prevDur = dur;
+                    prevTickAt = now;
+                } finally {
+                    monitorTickInFlight = false;
+                    if (rerunMonitorAfterTick && isHelperRunning && !finished) {
+                        rerunMonitorAfterTick = false;
+                        setTimeout(() => { void monitorPlayback(); }, 0);
+                    }
+                }
+            };
+            activePlaybackCleanup = clearEndedListener;
+            bindEndedListener();
+            monitorTimer = setInterval(monitorPlayback, 1000);
         } else {
             const noTaskText = data.message || getErrorText(data.reason || 'targets_temporarily_unavailable') || '暂无可互助目标';
             scheduleNoTaskRetry(infoEl, noTaskText);
