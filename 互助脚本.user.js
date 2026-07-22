@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.10
-// @description  V3.8.10：修复后台标签页错过歌曲结束时未完成互助的问题。
+// @version      3.8.11
+// @description  V3.8.11：新增月度互助阶段规则，并让每周互助池空投仅覆盖每月前 14 天。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.10';
+    const CURRENT_VERSION = '3.8.11';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -772,6 +772,7 @@
         if (code === 'helper_credit_held') return '你本月已达到被互助上限，且当前额度已达到留存上限，本月暂不再给你派发新的互助任务。';
         if (code === 'helper_credit_overflow') return '你的当前额度过高，系统暂时不会再给你派发新的互助任务。';
         if (code === 'rcredit_daily_limit_reached') return '今天的 rcredit 额度已经用完，系统已暂停派单，明天自动恢复。';
+        if (code === 'rcredit_only_help_period') return '本月已进入 rcredit 专属互助阶段：仅已达到 rcredit 资格的用户可以继续接任务，且不再发放 credit；额度不足请充值。';
         if (code === 'pool_empty') return '当前没有可用的互助目标。';
         if (code === 'targets_out_of_credit') return '当前互助池里的目标额度已经耗尽。';
         if (code === 'targets_busy') return '当前可用目标都已有进行中的互助任务。';
@@ -1812,6 +1813,14 @@
             : (state.monthly_cap_reached
                 ? `rcredit 解锁进度: 本月贡献 ${monthlyCompletedCreditUnits} / ${rcreditContributionTarget} credit`
                 : '');
+        const helpSchedule = economyState && economyState.helpSchedule;
+        const helpScheduleLine = helpSchedule && helpSchedule.rcreditOnly
+            ? `本月已进入 rcredit 专属阶段：仅 rcredit 资格用户可接任务，不再发放 credit`
+            : (helpSchedule && !helpSchedule.effective
+                ? `新互助周期将于 ${helpSchedule.effectiveMonth} 生效：每月 1-14 日普通互助，${helpSchedule.rcreditOnlyStartDay} 日起仅限 rcredit 资格用户`
+                : (helpSchedule
+                    ? `本月普通互助开放至 ${Number(helpSchedule.rcreditOnlyStartDay || 15) - 1} 日；${helpSchedule.rcreditOnlyStartDay} 日起仅限 rcredit 资格用户且不再发放 credit`
+                    : ''));
         const consumerLine = currentUserState && !isCurrentUserHelper()
             ? '消费用户可提交目标和充值 credit；开通 Helper 后才能助力他人并赚取奖励。'
             : '';
@@ -1819,7 +1828,7 @@
         updateWalletControls(state);
         if (infoEl && !isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}${decayableCredits > 0 ? `（其中助力余额 ${decayableCredits}）` : ''}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}${decayableCredits > 0 ? `（其中助力余额 ${decayableCredits}）` : ''}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helpScheduleLine ? `\n${helpScheduleLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -2201,6 +2210,15 @@
         if(!data) { infoEl.innerText = '服务器连接失败'; return; }
         if (isApiErrorPayload(data)) {
             if (data.participant) updateParticipantInfo(data.participant);
+            if (data.error === 'rcredit_only_help_period') {
+                const retryAfterSeconds = Math.max(60, Number(data.retryAfterSeconds || 3600));
+                infoEl.innerText = `${getPayloadErrorText(data, 'rcredit_only_help_period')}\n下月 1 日自动恢复普通互助`;
+                nextJobRetryTimer = setTimeout(() => {
+                    nextJobRetryTimer = null;
+                    if (isHelperRunning) playNext();
+                }, retryAfterSeconds * 1000);
+                return;
+            }
             if (data.error === 'helper_credit_held') {
                 const retryAfterSeconds = Math.max(300, Number(data.retryAfterSeconds || 1800));
                 infoEl.innerText = `${getPayloadErrorText(data, 'helper_credit_held')}\n${Math.ceil(retryAfterSeconds / 60)} 分钟后自动重试`;
