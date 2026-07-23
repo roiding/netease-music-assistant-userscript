@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.11
-// @description  V3.8.11：新增月度互助阶段规则，并让每周互助池空投仅覆盖每月前 14 天。
+// @version      3.8.12
+// @description  V3.8.12：新增由管理后台维护、按本地已读编号展示的公告栏。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.11';
+    const CURRENT_VERSION = '3.8.12';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -41,6 +41,7 @@
     const ERROR_KEY = 'musicHelperLastError';
     const TAB_LOCK_KEY = 'musicHelperActiveTabLock';
     const TAB_ID_KEY = 'musicHelperTabId';
+    const READ_ANNOUNCEMENT_IDS_KEY = 'musicHelperReadAnnouncementIds';
     const JOIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
@@ -67,6 +68,9 @@
     let currentUserState = null;
     let currentParticipantState = null;
     let currentMerchantCredential = null;
+    let currentAnnouncementId = '';
+    let announcementRequestPromise = null;
+    let announcementCheckedAfterLogin = false;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
@@ -1266,6 +1270,14 @@
                 </div>
                 <div id="helper-body">
                     <div id="login-status" class="helper-session-status">${token ? '正在读取账户...' : '登录后即可提交互助目标'}</div>
+                    <section id="helper-announcement" class="helper-announcement" hidden>
+                        <div class="helper-announcement-head">
+                            <strong id="helper-announcement-title">系统公告</strong>
+                            <span id="helper-announcement-id"></span>
+                        </div>
+                        <div id="helper-announcement-content" class="helper-announcement-content"></div>
+                        <button id="helper-announcement-read-btn" class="helper-btn helper-btn-notice" type="button">我已阅读</button>
+                    </section>
                     <div id="auth-section" class="helper-auth-card" style="${token ? 'display:none' : 'display:grid'}">
                         <div class="helper-auth-icon">LD</div>
                         <div><strong>使用 Linux.do 账户</strong><p>登录后可提交目标、充值额度并查看钱包。</p></div>
@@ -1407,6 +1419,21 @@
                 text-overflow: ellipsis;
                 white-space: nowrap;
             }
+            .helper-announcement {
+                display: grid;
+                gap: 9px;
+                margin-bottom: 11px;
+                padding: 12px;
+                border: 1px solid #f0c36a;
+                border-radius: 12px;
+                background: #fff9e9;
+                box-shadow: 0 6px 16px rgba(126, 85, 10, .08);
+            }
+            .helper-announcement[hidden] { display: none; }
+            .helper-announcement-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+            .helper-announcement-head strong { min-width: 0; color: #6f4b08; font-size: 13px; overflow-wrap: anywhere; }
+            .helper-announcement-head span { flex: none; color: #9a6b16; font-size: 9px; }
+            .helper-announcement-content { color: #5f5135; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
             .helper-auth-card { gap: 10px; padding: 16px; border: 1px solid var(--mh-line); border-radius: 13px; background: linear-gradient(145deg, #fff, #fafafd); }
             .helper-auth-card > div:nth-child(2) { min-width: 0; }
             .helper-auth-card strong { font-size: 14px; }
@@ -1452,6 +1479,7 @@
             .helper-btn:hover { filter: brightness(.97); }
             .helper-btn:active { transform: translateY(1px); }
             .helper-btn:disabled { cursor: wait; opacity: .58; }
+            .helper-btn-notice { color: #684707; background: #f6d98f; }
             .helper-btn-primary, .helper-btn-danger { background: linear-gradient(135deg, var(--mh-red-dark), var(--mh-red)); }
             .helper-btn-dark { background: #202124; }
             .helper-btn-blue { background: #2979e8; }
@@ -1542,11 +1570,13 @@
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
         document.getElementById('merchant-bind-btn').onclick = bindMerchantCredential;
+        document.getElementById('helper-announcement-read-btn').onclick = markCurrentAnnouncementRead;
         document.getElementById('manual-btn').onclick = () => { triggerIframePlay(); document.getElementById('manual-btn').style.display='none'; };
         document.getElementById('min-btn').onclick = () => { document.getElementById('music-helper-panel').style.display='none'; document.getElementById('helper-toggle-btn').style.display='flex'; };
         document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; } };
 
         fetchConfig();
+        void refreshAnnouncement();
         if (token && ensureSingleTabLock()) refreshMe();
         const lastError = GM_getValue(ERROR_KEY, '');
         if (lastError && !hasPendingAuthRedirect) {
@@ -1772,6 +1802,67 @@
             updateParticipantInfo(d.participant);
             hydrateTargetInput(d.participant);
             updateMerchantCredentialControls();
+            if (!announcementCheckedAfterLogin) {
+                announcementCheckedAfterLogin = true;
+                void refreshAnnouncement();
+            }
+        }
+    }
+
+    function readAnnouncementIds() {
+        const parsed = safeJSON(String(GM_getValue(READ_ANNOUNCEMENT_IDS_KEY, '[]') || '[]'));
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((value) => String(value || '').trim()).filter(Boolean).slice(-100);
+    }
+
+    function hasReadAnnouncement(id) {
+        return readAnnouncementIds().includes(String(id || '').trim());
+    }
+
+    function markCurrentAnnouncementRead() {
+        const id = String(currentAnnouncementId || '').trim();
+        if (id) {
+            const ids = readAnnouncementIds().filter((value) => value !== id);
+            ids.push(id);
+            GM_setValue(READ_ANNOUNCEMENT_IDS_KEY, JSON.stringify(ids.slice(-100)));
+        }
+        hideAnnouncement();
+    }
+
+    function hideAnnouncement() {
+        currentAnnouncementId = '';
+        const banner = document.getElementById('helper-announcement');
+        if (banner) banner.hidden = true;
+    }
+
+    function showAnnouncement(announcement) {
+        const id = String(announcement && announcement.id || '').trim();
+        const content = String(announcement && announcement.content || '').trim();
+        if (!id || !content || hasReadAnnouncement(id)) {
+            hideAnnouncement();
+            return;
+        }
+        currentAnnouncementId = id;
+        document.getElementById('helper-announcement-title').textContent = String(announcement.title || '系统公告');
+        document.getElementById('helper-announcement-id').textContent = `#${id}`;
+        document.getElementById('helper-announcement-content').textContent = content;
+        document.getElementById('helper-announcement').hidden = false;
+    }
+
+    async function refreshAnnouncement() {
+        if (announcementRequestPromise) return announcementRequestPromise;
+        announcementRequestPromise = (async () => {
+            const result = await requestAPI('GET', '/announcement', null, '');
+            if (result.status !== 200 || !result.payload) return null;
+            const announcement = result.payload.announcement || null;
+            if (announcement) showAnnouncement(announcement);
+            else hideAnnouncement();
+            return announcement;
+        })();
+        try {
+            return await announcementRequestPromise;
+        } finally {
+            announcementRequestPromise = null;
         }
     }
 
