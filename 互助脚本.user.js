@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.13
-// @description  V3.8.13：公告编号由系统自动递增，脚本按本地已展示编号展示新公告。
+// @version      3.8.14
+// @description  V3.8.14：增加受限 Helper 状态提示，受限账号可充值和被互助但不能接单。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.13';
+    const CURRENT_VERSION = '3.8.14';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -763,6 +763,7 @@
         if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
         if (code === 'registration_required') return '当前账号尚未完成注册，请先完成开通流程。';
         if (code === 'helper_registration_required') return '当前是消费用户；开通 Helper 后才能帮助他人并赚取 credit 或 rcredit。';
+        if (code === 'helper_access_restricted') return '当前账号处于受限 Helper 状态，可以充值和接受互助，但暂不能帮助他人或赚取奖励。';
         if (code === 'invalid_or_expired_token') return '登录态已失效，请重新登录。';
         if (code === 'token_session_conflict') return '当前账号已在其他设备重新登录，当前页面登录态已失效。';
         if (code === 'tab_conflict') return '当前账号已经在另一个标签页运行，本页已停止服务。';
@@ -927,7 +928,7 @@
     }
 
     function isCurrentUserHelper() {
-        return !!(currentUserState && currentUserState.isRegistered);
+        return !!(currentUserState && currentUserState.isRegistered && !currentUserState.isHelperRestricted && currentUserState.canHelp !== false);
     }
 
     function activateHelperTab(tabName, persist = true) {
@@ -954,7 +955,7 @@
             toggleButton.style.background = '';
         }
         if (registerButton) {
-            registerButton.style.display = currentUserState && !isCurrentUserHelper() ? 'block' : 'none';
+            registerButton.style.display = currentUserState && !currentUserState.isRegistered ? 'block' : 'none';
         }
         updateAccountSummary();
     }
@@ -966,10 +967,13 @@
             summary.innerText = '尚未读取到账户信息。';
             return;
         }
-        const accountType = isCurrentUserHelper() ? 'Helper' : '消费用户';
+        const restricted = !!currentUserState.isHelperRestricted;
+        const accountType = restricted ? '受限 Helper' : (isCurrentUserHelper() ? 'Helper' : '消费用户');
         const permission = isCurrentUserHelper()
             ? '可以提交目标、接取助力任务并赚取 credit / rcredit。'
-            : '可以提交目标和充值 credit；开通 Helper 后可接取助力任务。';
+            : restricted
+                ? '可以提交目标、充值 credit 和接受互助；当前暂不能接取任务或赚取奖励。'
+                : '可以提交目标和充值 credit；开通 Helper 后可接取助力任务。';
         summary.innerHTML = `
             <div class="helper-account-head"><strong>${escapeHtml(currentUserState.displayName)}</strong><span>${accountType}</span></div>
             <p>${permission}</p>
@@ -986,6 +990,18 @@
             infoEl.innerText = getPayloadErrorText(payload, 'helper_registration_required');
         }
         activateHelperTab('help');
+    }
+
+    function handleHelperAccessRestricted(payload = null) {
+        stopHelper();
+        if (currentUserState) currentUserState = { ...currentUserState, isHelperRestricted: true, canHelp: false };
+        updatePrimaryAction();
+        const infoEl = document.getElementById('helper-info');
+        if (infoEl) {
+            infoEl.style.display = 'block';
+            infoEl.innerText = getPayloadErrorText(payload, 'helper_access_restricted');
+        }
+        activateHelperTab('wallet');
     }
 
     function handleAccessError(code, messageOverride = '') {
@@ -1744,6 +1760,10 @@
                 handleHelperRegistrationRequired(payload);
                 return payload;
             }
+            if (payload && payload.error === 'helper_access_restricted') {
+                handleHelperAccessRestricted(payload);
+                return payload;
+            }
             handleAccessError(
                 payload && payload.error ? payload.error : 'forbidden',
                 payload && payload.message ? payload.message : '',
@@ -1794,7 +1814,9 @@
         if (d && d.user) {
             currentUserState = d.user;
             currentParticipantState = d.participant || null;
-            const accountType = d.user.isRegistered ? 'Helper' : '消费用户';
+            const accountType = d.user.isHelperRestricted
+                ? '受限 Helper'
+                : (d.user.isRegistered ? 'Helper' : '消费用户');
             document.getElementById('login-status').innerText = `已登录: ${d.user.displayName} · ${accountType}`;
             economyState = d.economy || null;
             currentMerchantCredential = d.merchantCredential || { bound: false };
