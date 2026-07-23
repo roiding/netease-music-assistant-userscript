@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.12
-// @description  V3.8.12：新增由管理后台维护、按本地已读编号展示的公告栏。
+// @version      3.8.13
+// @description  V3.8.13：公告编号由系统自动递增，脚本按本地已展示编号展示新公告。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.12';
+    const CURRENT_VERSION = '3.8.13';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -41,7 +41,7 @@
     const ERROR_KEY = 'musicHelperLastError';
     const TAB_LOCK_KEY = 'musicHelperActiveTabLock';
     const TAB_ID_KEY = 'musicHelperTabId';
-    const READ_ANNOUNCEMENT_IDS_KEY = 'musicHelperReadAnnouncementIds';
+    const LATEST_SHOWN_ANNOUNCEMENT_ID_KEY = 'musicHelperLatestShownAnnouncementId';
     const JOIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
@@ -1276,7 +1276,7 @@
                             <span id="helper-announcement-id"></span>
                         </div>
                         <div id="helper-announcement-content" class="helper-announcement-content"></div>
-                        <button id="helper-announcement-read-btn" class="helper-btn helper-btn-notice" type="button">我已阅读</button>
+                        <button id="helper-announcement-close-btn" class="helper-btn helper-btn-notice" type="button">关闭</button>
                     </section>
                     <div id="auth-section" class="helper-auth-card" style="${token ? 'display:none' : 'display:grid'}">
                         <div class="helper-auth-icon">LD</div>
@@ -1570,7 +1570,7 @@
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
         document.getElementById('merchant-bind-btn').onclick = bindMerchantCredential;
-        document.getElementById('helper-announcement-read-btn').onclick = markCurrentAnnouncementRead;
+        document.getElementById('helper-announcement-close-btn').onclick = hideAnnouncement;
         document.getElementById('manual-btn').onclick = () => { triggerIframePlay(); document.getElementById('manual-btn').style.display='none'; };
         document.getElementById('min-btn').onclick = () => { document.getElementById('music-helper-panel').style.display='none'; document.getElementById('helper-toggle-btn').style.display='flex'; };
         document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; } };
@@ -1809,24 +1809,15 @@
         }
     }
 
-    function readAnnouncementIds() {
-        const parsed = safeJSON(String(GM_getValue(READ_ANNOUNCEMENT_IDS_KEY, '[]') || '[]'));
-        if (!Array.isArray(parsed)) return [];
-        return parsed.map((value) => String(value || '').trim()).filter(Boolean).slice(-100);
+    function latestShownAnnouncementId() {
+        const value = Number(GM_getValue(LATEST_SHOWN_ANNOUNCEMENT_ID_KEY, 0));
+        return Number.isSafeInteger(value) && value > 0 ? value : 0;
     }
 
-    function hasReadAnnouncement(id) {
-        return readAnnouncementIds().includes(String(id || '').trim());
-    }
-
-    function markCurrentAnnouncementRead() {
-        const id = String(currentAnnouncementId || '').trim();
-        if (id) {
-            const ids = readAnnouncementIds().filter((value) => value !== id);
-            ids.push(id);
-            GM_setValue(READ_ANNOUNCEMENT_IDS_KEY, JSON.stringify(ids.slice(-100)));
+    function rememberShownAnnouncementId(id) {
+        if (id > latestShownAnnouncementId()) {
+            GM_setValue(LATEST_SHOWN_ANNOUNCEMENT_ID_KEY, id);
         }
-        hideAnnouncement();
     }
 
     function hideAnnouncement() {
@@ -1836,10 +1827,14 @@
     }
 
     function showAnnouncement(announcement) {
-        const id = String(announcement && announcement.id || '').trim();
+        const id = Number(announcement && announcement.id);
         const content = String(announcement && announcement.content || '').trim();
-        if (!id || !content || hasReadAnnouncement(id)) {
+        if (!Number.isSafeInteger(id) || id <= 0 || !content) {
             hideAnnouncement();
+            return;
+        }
+        if (id <= latestShownAnnouncementId()) {
+            if (id !== currentAnnouncementId) hideAnnouncement();
             return;
         }
         currentAnnouncementId = id;
@@ -1847,6 +1842,7 @@
         document.getElementById('helper-announcement-id').textContent = `#${id}`;
         document.getElementById('helper-announcement-content').textContent = content;
         document.getElementById('helper-announcement').hidden = false;
+        rememberShownAnnouncementId(id);
     }
 
     async function refreshAnnouncement() {
