@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.14
-// @description  V3.8.14：增加受限 Helper 状态提示，受限账号可充值和被互助但不能接单。
+// @version      3.8.15
+// @description  V3.8.15：支持每月随机全民互助日，正常消费用户当天也可接单并赚取奖励。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -25,7 +25,7 @@
     if (window.self !== window.top) return;
 
     const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.14';
+    const CURRENT_VERSION = '3.8.15';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -931,6 +931,27 @@
         return !!(currentUserState && currentUserState.isRegistered && !currentUserState.isHelperRestricted && currentUserState.canHelp !== false);
     }
 
+    function currentBeijingDateKey() {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+        }).formatToParts(new Date());
+        const value = (type) => parts.find((part) => part.type === type)?.value || '';
+        return `${value('year')}-${value('month')}-${value('day')}`;
+    }
+
+    function isCommunityHelpDayActive() {
+        const activity = economyState && economyState.communityHelpDay;
+        return !!(activity && activity.date && activity.date === currentBeijingDateKey());
+    }
+
+    function canCurrentUserParticipate() {
+        if (!currentUserState || currentUserState.isBanned || currentUserState.isHelperRestricted) return false;
+        return isCurrentUserHelper() || isCommunityHelpDayActive();
+    }
+
     function activateHelperTab(tabName, persist = true) {
         const nextTab = ['help', 'wallet', 'account'].includes(tabName) ? tabName : 'help';
         document.querySelectorAll('[data-helper-tab]').forEach((button) => {
@@ -949,8 +970,8 @@
         const registerButton = document.getElementById('helper-register-btn');
         if (toggleButton && !isHelperRunning) {
             const hasTarget = !!(currentParticipantState && currentParticipantState.music_id);
-            toggleButton.innerText = isCurrentUserHelper()
-                ? '启动助力并保存目标'
+            toggleButton.innerText = canCurrentUserParticipate()
+                ? (isCurrentUserHelper() ? '启动助力并保存目标' : '全民互助日：启动助力')
                 : (hasTarget ? '更新互助目标' : '保存互助目标');
             toggleButton.style.background = '';
         }
@@ -971,6 +992,8 @@
         const accountType = restricted ? '受限 Helper' : (isCurrentUserHelper() ? 'Helper' : '消费用户');
         const permission = isCurrentUserHelper()
             ? '可以提交目标、接取助力任务并赚取 credit / rcredit。'
+            : isCommunityHelpDayActive() && !restricted
+                ? '今天是全民互助日，可以临时接取助力任务并赚取奖励。'
             : restricted
                 ? '可以提交目标、充值 credit 和接受互助；当前暂不能接取任务或赚取奖励。'
                 : '可以提交目标和充值 credit；开通 Helper 后可接取助力任务。';
@@ -1923,21 +1946,32 @@
                 ? `rcredit 解锁进度: 本月贡献 ${monthlyCompletedCreditUnits} / ${rcreditContributionTarget} credit`
                 : '');
         const helpSchedule = economyState && economyState.helpSchedule;
+        const communityHelpDay = economyState && economyState.communityHelpDay;
+        const communityHelpDayActive = isCommunityHelpDayActive();
+        const communityHelpDayLine = communityHelpDay && communityHelpDay.date
+            ? (communityHelpDayActive
+                ? `今天是全民互助日：正常登录用户均可接任务，未达到 rcredit 资格时获得可衰减 credit`
+                : `本月全民互助日：${communityHelpDay.date}`)
+            : '';
         const helpScheduleLine = helpSchedule && helpSchedule.rcreditOnly
-            ? `本月已进入 rcredit 专属阶段：仅 rcredit 资格用户可接任务，不再发放 credit`
+            ? (communityHelpDayActive
+                ? `全民互助日已临时覆盖今天的 rcredit 专属接单限制`
+                : `本月已进入 rcredit 专属阶段：仅 rcredit 资格用户可接任务，不再发放 credit`)
             : (helpSchedule && !helpSchedule.effective
                 ? `新互助周期将于 ${helpSchedule.effectiveMonth} 生效：每月 1-14 日普通互助，${helpSchedule.rcreditOnlyStartDay} 日起仅限 rcredit 资格用户`
                 : (helpSchedule
                     ? `本月普通互助开放至 ${Number(helpSchedule.rcreditOnlyStartDay || 15) - 1} 日；${helpSchedule.rcreditOnlyStartDay} 日起仅限 rcredit 资格用户且不再发放 credit`
                     : ''));
         const consumerLine = currentUserState && !isCurrentUserHelper()
-            ? '消费用户可提交目标和充值 credit；开通 Helper 后才能助力他人并赚取奖励。'
+            ? (communityHelpDayActive
+                ? '消费用户今天可以参与全民互助；活动结束后恢复为只能提交目标和充值。'
+                : '消费用户可提交目标和充值 credit；开通 Helper 后才能长期助力他人并赚取奖励。')
             : '';
         const noticeText = getParticipantNoticeText(state);
         updateWalletControls(state);
         if (infoEl && !isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}${decayableCredits > 0 ? `（其中助力余额 ${decayableCredits}）` : ''}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${helpScheduleLine ? `\n${helpScheduleLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `剩余可被互助额度: ${credits}${decayableCredits > 0 ? `（其中助力余额 ${decayableCredits}）` : ''}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${communityHelpDayLine ? `\n${communityHelpDayLine}` : ''}${helpScheduleLine ? `\n${helpScheduleLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -2126,7 +2160,7 @@
         const mtp = document.getElementById('my-music-type').value;
         if(!mid) return;
         GM_setValue('myMusicId', mid); GM_setValue('myMusicType', mtp);
-        if (!isCurrentUserHelper()) {
+        if (!canCurrentUserParticipate()) {
             await submitConsumerTarget(mid, mtp);
             return;
         }
@@ -2143,8 +2177,8 @@
         const helperInfo = document.getElementById('helper-info');
         if (toggleButton) {
             const hasTarget = !!(currentParticipantState && currentParticipantState.music_id);
-            toggleButton.innerText = isCurrentUserHelper()
-                ? '启动助力并保存目标'
+            toggleButton.innerText = canCurrentUserParticipate()
+                ? (isCurrentUserHelper() ? '启动助力并保存目标' : '全民互助日：启动助力')
                 : (hasTarget ? '更新互助目标' : '保存互助目标');
             toggleButton.style.background = '';
         }

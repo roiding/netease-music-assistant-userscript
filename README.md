@@ -37,6 +37,11 @@ When the backend economy flags are enabled, the panel also shows LDC credit
 top-up and rcredit redemption controls. Users who have reached the monthly
 received-help cap can continue helping and receive rcredit instead of ordinary
 credit; disabled economy features remain hidden.
+The backend also publishes one randomly selected community help day each month.
+On that date, a normal consumer account can start the local helper workflow and
+earn decayable credit without opening Helper; banned and restricted accounts
+remain excluded. The panel reads the Beijing activity date from `/api/me` and
+shows the automatically generated announcement.
 When configured by the backend, rcredit redemption can be settled immediately
 through the official LDC merchant distribution API. Ambiguous results remain
 frozen for administrator reconciliation instead of being retried automatically.
