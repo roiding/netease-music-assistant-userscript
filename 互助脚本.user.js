@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.15
-// @description  V3.8.15：支持每月随机全民互助日，正常消费用户当天也可接单并赚取奖励。
+// @version      3.8.16
+// @description  V3.8.16：迁移互助服务域名，并保留每月随机全民互助日。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
 // @match        *://linux.do/latest*
-// @match        *://netease.ran-ding.gq/register*
-// @match        *://netease.ran-ding.gq/credit-cdk*
+// @match        *://roiding.dpdns.org/register*
+// @match        *://roiding.dpdns.org/credit-cdk*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -17,15 +17,15 @@
 // @grant        GM_removeValueChangeListener
 // @grant        GM_addStyle
 // @grant        unsafeWindow
-// @connect      netease.ran-ding.gq
+// @connect      roiding.dpdns.org
 // ==/UserScript==
 
 (function() {
     'use strict';
     if (window.self !== window.top) return;
 
-    const API_BASE = 'https://netease.ran-ding.gq/api';
-    const CURRENT_VERSION = '3.8.15';
+    const API_BASE = 'https://roiding.dpdns.org/api';
+    const CURRENT_VERSION = '3.8.16';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
