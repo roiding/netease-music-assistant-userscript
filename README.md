@@ -10,10 +10,11 @@ Tampermonkey userscript for Netease Music mutual playback.
 
 ## Configure
 
-Deploy the backend first, then update `API_BASE` in `互助脚本.user.js`:
+Deploy the backend first, then update `SERVICE_ORIGINS` in `互助脚本.user.js`.
+The first entry is canonical and later entries are network-failure fallbacks:
 
 ```js
-const API_BASE = 'https://YOUR_WORKER_DOMAIN/api';
+const SERVICE_ORIGINS = ['https://PRIMARY_WORKER_DOMAIN', 'https://FALLBACK_WORKER_DOMAIN'];
 ```
 
 The script runs on:

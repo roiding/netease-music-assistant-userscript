@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.16
-// @description  V3.8.16：迁移互助服务域名，并保留每月随机全民互助日。
+// @version      3.8.17
+// @description  V3.8.17：新旧服务域名双路兼容，优化跨域预检与故障切换。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
 // @match        *://linux.do/latest*
 // @match        *://roiding.dpdns.org/register*
 // @match        *://roiding.dpdns.org/credit-cdk*
+// @match        *://netease.ran-ding.gq/register*
+// @match        *://netease.ran-ding.gq/credit-cdk*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -18,14 +20,15 @@
 // @grant        GM_addStyle
 // @grant        unsafeWindow
 // @connect      roiding.dpdns.org
+// @connect      netease.ran-ding.gq
 // ==/UserScript==
 
 (function() {
     'use strict';
     if (window.self !== window.top) return;
 
-    const API_BASE = 'https://roiding.dpdns.org/api';
-    const CURRENT_VERSION = '3.8.16';
+    const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
+    const CURRENT_VERSION = '3.8.17';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -78,18 +81,17 @@
     function getUnsafeWindow() { try { return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window; } catch(e) { return window; } }
     function getSafePlayer() { try { const uw = getUnsafeWindow(); return window.player || uw.player || null; } catch(e) { return null; } }
     function registrationProbeStorageKey(probeToken) { return `${REGISTRATION_PROBE_KEY_PREFIX}${String(probeToken || '').trim()}`; }
+    function isServiceOrigin(origin) { return SERVICE_ORIGINS.includes(String(origin || '').replace(/\/+$/, '')); }
     function isRegistrationBridgePage() {
         try {
-            const serviceOrigin = new URL(API_BASE).origin;
-            return window.location.origin === serviceOrigin && window.location.pathname === '/register';
+            return isServiceOrigin(window.location.origin) && window.location.pathname === '/register';
         } catch (e) {
             return false;
         }
     }
     function isCreditCdkBridgePage() {
         try {
-            const serviceOrigin = new URL(API_BASE).origin;
-            return window.location.origin === serviceOrigin && window.location.pathname === '/credit-cdk';
+            return isServiceOrigin(window.location.origin) && window.location.pathname === '/credit-cdk';
         } catch (e) {
             return false;
         }
@@ -1630,24 +1632,20 @@
     }
 
     async function fetchConfig() {
-        return new Promise(r => GM_xmlhttpRequest({
-            method:'GET',
-            url:`${API_BASE}/auth-config`,
-            headers:{'X-Music-Helper-Version': CURRENT_VERSION},
-            onload:res=>{
-                const d = safeJSON(res.responseText);
-                if(d && d.latestVersion && compareVersions(d.latestVersion, CURRENT_VERSION) > 0) {
-                    showUpdateButton(`更新到 v${d.latestVersion}`);
-                }
-                authConfig = d;
-                if (d && d.minSupportedVersion && compareVersions(CURRENT_VERSION, d.minSupportedVersion) < 0) {
-                    showUpgradeRequired(d.minSupportedVersion, d.latestVersion);
-                }
-                r(d);
-            },
-            onerror:()=>r(null),
-            ontimeout:()=>r(null)
-        }));
+        for (const origin of SERVICE_ORIGINS) {
+            const result = await requestServiceOrigin(origin, 'GET', '/auth-config', null, '', false);
+            if (result.status === 0) continue;
+            const d = result.payload;
+            if(d && d.latestVersion && compareVersions(d.latestVersion, CURRENT_VERSION) > 0) {
+                showUpdateButton(`更新到 v${d.latestVersion}`);
+            }
+            authConfig = d;
+            if (d && d.minSupportedVersion && compareVersions(CURRENT_VERSION, d.minSupportedVersion) < 0) {
+                showUpgradeRequired(d.minSupportedVersion, d.latestVersion);
+            }
+            return d;
+        }
+        return null;
     }
 
     async function startHelperRegistration() {
@@ -1696,14 +1694,28 @@
         return expiresAt > 0 && now >= expiresAt - TOKEN_REFRESH_SKEW_MS;
     }
 
-    async function requestAPI(method, path, body = null, token = GM_getValue(TOKEN_KEY, '')) {
+    function requestServiceOrigin(origin, method, path, body, token, includeContentType = true) {
         return new Promise(r => GM_xmlhttpRequest({
-            method, url:`${API_BASE}${path}`, headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json','X-Music-Helper-Version': CURRENT_VERSION},
+            method,
+            url:`${origin}/api${path}`,
+            headers:{
+                ...(token ? {'Authorization':`Bearer ${token}`} : {}),
+                ...(includeContentType ? {'Content-Type':'application/json'} : {}),
+                'X-Music-Helper-Version': CURRENT_VERSION,
+            },
             data: body?JSON.stringify(body):null,
             onload: res => r({ status: res.status, payload: safeJSON(res.responseText) }),
             onerror:()=>r({ status: 0, payload: null }),
             ontimeout:()=>r({ status: 0, payload: null })
         }));
+    }
+
+    async function requestAPI(method, path, body = null, token = GM_getValue(TOKEN_KEY, '')) {
+        for (const origin of SERVICE_ORIGINS) {
+            const result = await requestServiceOrigin(origin, method, path, body, token);
+            if (result.status !== 0) return result;
+        }
+        return { status: 0, payload: null };
     }
 
     async function refreshAccessToken(force = false) {
@@ -1809,27 +1821,20 @@
     }
 
     async function claimTicket(ticket) {
-        return new Promise(r => GM_xmlhttpRequest({
-            method:'POST',
-            url:`${API_BASE}/auth/claim`,
-            headers:{'Content-Type':'application/json','X-Music-Helper-Version': CURRENT_VERSION},
-            data: JSON.stringify({ ticket }),
-            onload: res => {
-                const d = safeJSON(res.responseText);
-                if (res.status === 403 && d && d.error === 'client_upgrade_required') {
-                    showUpgradeRequired(d.minSupportedVersion, d.latestVersion);
-                    r({ ok: false, status: res.status, payload: d });
-                    return;
-                }
-                if (res.status === 200 && storeSessionToken(d)) {
-                    r({ ok: true, status: res.status, payload: d });
-                } else {
-                    r({ ok: false, status: res.status, payload: d });
-                }
-            },
-            onerror:()=>r({ ok: false, status: 0, payload: null }),
-            ontimeout:()=>r({ ok: false, status: 0, payload: null })
-        }));
+        for (const origin of SERVICE_ORIGINS) {
+            const result = await requestServiceOrigin(origin, 'POST', '/auth/claim', { ticket }, '');
+            if (result.status === 0) continue;
+            const d = result.payload;
+            if (result.status === 403 && d && d.error === 'client_upgrade_required') {
+                showUpgradeRequired(d.minSupportedVersion, d.latestVersion);
+                return { ok: false, status: result.status, payload: d };
+            }
+            if (result.status === 200 && storeSessionToken(d)) {
+                return { ok: true, status: result.status, payload: d };
+            }
+            return { ok: false, status: result.status, payload: d };
+        }
+        return { ok: false, status: 0, payload: null };
     }
 
     async function refreshMe() {
