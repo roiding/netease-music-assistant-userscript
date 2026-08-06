@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.17
-// @description  V3.8.17：新旧服务域名双路兼容，优化跨域预检与故障切换。
+// @version      3.8.18
+// @description  V3.8.18：支持当月月卡 Helper CDK，并展示 Helper 有效期。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.8.17';
+    const CURRENT_VERSION = '3.8.18';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -933,6 +933,20 @@
         return !!(currentUserState && currentUserState.isRegistered && !currentUserState.isHelperRestricted && currentUserState.canHelp !== false);
     }
 
+    function helperAccountType(user) {
+        if (!user) return '消费用户';
+        if (user.isHelperRestricted) return '受限 Helper';
+        if (!user.isRegistered) return user.helperExpiresAt ? '月卡已到期' : '消费用户';
+        return user.helperExpiresAt ? '月卡 Helper' : '永久 Helper';
+    }
+
+    function helperExpiryText(user) {
+        if (!user || !user.helperExpiresAt) return '';
+        const value = new Date(user.helperExpiresAt);
+        if (Number.isNaN(value.getTime())) return '';
+        return `有效至 ${value.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
+    }
+
     function currentBeijingDateKey() {
         const parts = new Intl.DateTimeFormat('en-CA', {
             timeZone: 'Asia/Shanghai',
@@ -991,7 +1005,7 @@
             return;
         }
         const restricted = !!currentUserState.isHelperRestricted;
-        const accountType = restricted ? '受限 Helper' : (isCurrentUserHelper() ? 'Helper' : '消费用户');
+        const accountType = helperAccountType(currentUserState);
         const permission = isCurrentUserHelper()
             ? '可以提交目标、接取助力任务并赚取 credit / rcredit。'
             : isCommunityHelpDayActive() && !restricted
@@ -1001,7 +1015,7 @@
                 : '可以提交目标和充值 credit；开通 Helper 后可接取助力任务。';
         summary.innerHTML = `
             <div class="helper-account-head"><strong>${escapeHtml(currentUserState.displayName)}</strong><span>${accountType}</span></div>
-            <p>${permission}</p>
+            <p>${permission}${helperExpiryText(currentUserState) ? `<br>${escapeHtml(helperExpiryText(currentUserState))}` : ''}</p>
         `;
     }
 
@@ -1842,9 +1856,7 @@
         if (d && d.user) {
             currentUserState = d.user;
             currentParticipantState = d.participant || null;
-            const accountType = d.user.isHelperRestricted
-                ? '受限 Helper'
-                : (d.user.isRegistered ? 'Helper' : '消费用户');
+            const accountType = helperAccountType(d.user);
             document.getElementById('login-status').innerText = `已登录: ${d.user.displayName} · ${accountType}`;
             economyState = d.economy || null;
             currentMerchantCredential = d.merchantCredential || { bound: false };
