@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.21
-// @description  V3.8.21：公告支持安全 Markdown 展示，并增加异常播放风险提醒。
+// @version      3.8.22
+// @description  V3.8.22：同一 Helper 每日帮助同一用户最多 5 次，并支持未完成任务关闭取消。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.8.21';
+    const CURRENT_VERSION = '3.8.22';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -46,6 +46,10 @@
     const TAB_ID_KEY = 'musicHelperTabId';
     const LATEST_SHOWN_ANNOUNCEMENT_ID_KEY = 'musicHelperLatestShownAnnouncementId';
     const VOLUNTEER_MODE_KEY = 'musicHelperVolunteerMode';
+    const DAILY_OWNER_HELP_COUNTS_KEY = 'musicHelperDailyOwnerHelpCounts:v1';
+    const PENDING_PLAY_JOB_KEY = 'musicHelperPendingPlayJob:v1';
+    const DAILY_OWNER_HELP_LIMIT = 5;
+    const MAX_EXCLUDED_OWNER_IDS = 64;
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
     const TAB_LOCK_STALE_MS = 15000;
@@ -73,6 +77,7 @@
     let currentAnnouncementId = '';
     let announcementRequestPromise = null;
     let announcementCheckedAfterLogin = false;
+    let cancelBeaconJobId = '';
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
@@ -955,6 +960,136 @@
         }).formatToParts(new Date());
         const value = (type) => parts.find((part) => part.type === type)?.value || '';
         return `${value('year')}-${value('month')}-${value('day')}`;
+    }
+
+    function currentHelperUserId() {
+        return String(currentUserState && currentUserState.userId || '').trim();
+    }
+
+    function readDailyOwnerHelpState(helperUserId = currentHelperUserId()) {
+        const date = currentBeijingDateKey();
+        const normalizedHelperUserId = String(helperUserId || '').trim();
+        let stored = null;
+        try {
+            const raw = GM_getValue(DAILY_OWNER_HELP_COUNTS_KEY, '');
+            stored = typeof raw === 'string' ? safeJSON(raw) : raw;
+        } catch (error) {}
+        if (!stored || stored.date !== date || stored.helperUserId !== normalizedHelperUserId) {
+            return { date, helperUserId: normalizedHelperUserId, counts: {}, completedJobIds: [] };
+        }
+        return {
+            date,
+            helperUserId: normalizedHelperUserId,
+            counts: stored.counts && typeof stored.counts === 'object' ? stored.counts : {},
+            completedJobIds: Array.isArray(stored.completedJobIds) ? stored.completedJobIds : [],
+        };
+    }
+
+    function writeDailyOwnerHelpState(state) {
+        GM_setValue(DAILY_OWNER_HELP_COUNTS_KEY, JSON.stringify(state));
+    }
+
+    function completedOwnerExclusions() {
+        const helperUserId = currentHelperUserId();
+        if (!helperUserId) return [];
+        const state = readDailyOwnerHelpState(helperUserId);
+        return Object.entries(state.counts)
+            .filter(([ownerUserId, count]) => ownerUserId && Number(count || 0) >= DAILY_OWNER_HELP_LIMIT)
+            .map(([ownerUserId]) => ownerUserId)
+            .slice(0, MAX_EXCLUDED_OWNER_IDS);
+    }
+
+    function recordCompletedOwnerHelp(jobId, ownerUserId) {
+        const normalizedJobId = String(jobId || '').trim();
+        const normalizedOwnerUserId = String(ownerUserId || '').trim();
+        const helperUserId = currentHelperUserId();
+        if (!normalizedJobId || !normalizedOwnerUserId || !helperUserId) return false;
+        const state = readDailyOwnerHelpState(helperUserId);
+        if (state.completedJobIds.includes(normalizedJobId)) return false;
+        state.completedJobIds.push(normalizedJobId);
+        if (state.completedJobIds.length > 1000) {
+            state.completedJobIds = state.completedJobIds.slice(-1000);
+        }
+        state.counts[normalizedOwnerUserId] = Number(state.counts[normalizedOwnerUserId] || 0) + 1;
+        writeDailyOwnerHelpState(state);
+        return true;
+    }
+
+    function readPendingPlayJob() {
+        try {
+            const pending = safeJSON(sessionStorage.getItem(PENDING_PLAY_JOB_KEY) || '');
+            if (!pending || !pending.jobId || !pending.cancelToken) return null;
+            return pending;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function storePendingPlayJob(job) {
+        if (!job || !job.jobId || !job.cancelToken) return;
+        cancelBeaconJobId = '';
+        sessionStorage.setItem(PENDING_PLAY_JOB_KEY, JSON.stringify({
+            jobId: String(job.jobId),
+            ownerUserId: String(job.owner && job.owner.userId || ''),
+            helperUserId: currentHelperUserId(),
+            cancelToken: String(job.cancelToken),
+            expiresAt: String(job.expiresAt || ''),
+            storedAt: new Date().toISOString(),
+        }));
+    }
+
+    function clearPendingPlayJob(jobId = '') {
+        const pending = readPendingPlayJob();
+        if (jobId && pending && pending.jobId !== String(jobId)) return;
+        sessionStorage.removeItem(PENDING_PLAY_JOB_KEY);
+        if (!jobId || cancelBeaconJobId === String(jobId)) cancelBeaconJobId = '';
+    }
+
+    async function cancelStoredPendingJob() {
+        const pending = readPendingPlayJob();
+        if (!pending) return false;
+        const result = await requestAPI('POST', '/play/cancel', {
+            jobId: pending.jobId,
+            cancelToken: pending.cancelToken,
+        }, '');
+        if (result.status >= 200 && result.status < 300 && result.payload && result.payload.ok) {
+            clearPendingPlayJob(pending.jobId);
+            return true;
+        }
+        return false;
+    }
+
+    function sendPendingJobCancellationBeacon() {
+        const pending = readPendingPlayJob();
+        if (!pending || cancelBeaconJobId === pending.jobId) return false;
+        cancelBeaconJobId = pending.jobId;
+        const url = `${SERVICE_ORIGINS[0]}/api/play/cancel`;
+        const payload = JSON.stringify({ jobId: pending.jobId, cancelToken: pending.cancelToken });
+        try {
+            const body = new Blob([payload], { type: 'text/plain;charset=UTF-8' });
+            if (navigator.sendBeacon(url, body)) return true;
+        } catch (error) {}
+        try {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url,
+                headers: { 'Content-Type': 'application/json' },
+                data: payload,
+            });
+            return true;
+        } catch (error) {
+            cancelBeaconJobId = '';
+            return false;
+        }
+    }
+
+    function nextJobPath(volunteerMode) {
+        const params = new URLSearchParams();
+        if (volunteerMode) params.set('volunteer', '1');
+        const exclusions = completedOwnerExclusions();
+        if (exclusions.length > 0) params.set('excludeOwners', exclusions.join(','));
+        const query = params.toString();
+        return query ? `/next?${query}` : '/next';
     }
 
     function isCommunityHelpDayActive() {
@@ -2241,6 +2376,7 @@
 
     function stopHelper() {
         const wasVolunteer = !!(activeJoinState && activeJoinState.volunteer);
+        if (readPendingPlayJob()) void cancelStoredPendingJob();
         isHelperRunning = false;
         activeJoinState = null;
         clearPlaybackMonitor();
@@ -2367,13 +2503,15 @@
 
     async function reportPlayIssue(jobId, sourceMusicId, targetMusicId, reason, observedTitle = '') {
         if (!jobId) return null;
-        return callAPI('POST', '/play/report-issue', {
+        const result = await callAPI('POST', '/play/report-issue', {
             jobId,
             sourceMusicId,
             targetMusicId,
             reason,
             observedTitle,
         });
+        if (result && result.ok) clearPendingPlayJob(jobId);
+        return result;
     }
 
     async function finishCurrentJob(jobId, playedMs, positionMs, durationMs) {
@@ -2426,7 +2564,7 @@
         nextRequestInFlight = true;
         let data;
         try {
-            data = await callAPI('GET', activeJoinState && activeJoinState.volunteer ? '/next?volunteer=1' : '/next');
+            data = await callAPI('GET', nextJobPath(!!(activeJoinState && activeJoinState.volunteer)));
         } finally {
             nextRequestInFlight = false;
         }
@@ -2484,6 +2622,8 @@
             const sourceMusicId = data.sourceMusicId || data.musicId;
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
+            const ownerUserId = String(data.owner && data.owner.userId || '');
+            storePendingPlayJob(data);
             const creditCost = Number(data.creditCost || 1);
             const volunteerJob = data.volunteer === true;
             const rewardCredit = volunteerJob ? 0 : Number(data.rewardCredit || creditCost);
@@ -2566,6 +2706,10 @@
                 try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
                 const result = await finishCurrentJob(jobId, playedMs, positionMs, durationMs);
                 if (result && result.participant) updateParticipantInfo(result.participant);
+                if (result && result.ok && (result.status === 'completed' || result.status === 'already_settled')) {
+                    recordCompletedOwnerHelp(result.jobId || jobId, result.ownerUserId || ownerUserId);
+                    clearPendingPlayJob(jobId);
+                }
                 setTimeout(playNext, 2000);
             };
             const monitorPlayback = async () => {
@@ -2771,6 +2915,7 @@
 
     setTimeout(async () => {
         initUI();
+        void cancelStoredPendingJob();
         window.addEventListener('storage', (event) => {
             if (event.key !== TAB_LOCK_KEY) return;
             const lock = readTabLock();
@@ -2780,6 +2925,10 @@
             }
         });
         window.addEventListener('beforeunload', () => releaseTabLock());
+        window.addEventListener('pagehide', (event) => {
+            releaseTabLock();
+            if (!event.persisted) sendPendingJobCancellationBeacon();
+        });
         const params = new URLSearchParams(window.location.search);
         const ticket = params.get('music_helper_ticket');
         const loginError = params.get('music_helper_error');
