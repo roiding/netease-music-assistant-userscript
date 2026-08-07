@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.20
-// @description  V3.8.20：取消周期性 join 心跳，启动互助时仅登记一次。
+// @version      3.8.21
+// @description  V3.8.21：公告支持安全 Markdown 展示，并增加异常播放风险提醒。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.8.20';
+    const CURRENT_VERSION = '3.8.21';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1509,7 +1509,19 @@
             .helper-announcement-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
             .helper-announcement-head strong { min-width: 0; color: #6f4b08; font-size: 13px; overflow-wrap: anywhere; }
             .helper-announcement-head span { flex: none; color: #9a6b16; font-size: 9px; }
-            .helper-announcement-content { color: #5f5135; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
+            .helper-announcement-content { color: #5f5135; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; user-select: text; }
+            .helper-announcement-content > :first-child { margin-top: 0; }
+            .helper-announcement-content > :last-child { margin-bottom: 0; }
+            .helper-announcement-content p { margin: 0 0 8px; }
+            .helper-announcement-content h1, .helper-announcement-content h2, .helper-announcement-content h3, .helper-announcement-content h4 { margin: 9px 0 6px; color: #6f4b08; font-size: 12px; line-height: 1.45; }
+            .helper-announcement-content ul, .helper-announcement-content ol { margin: 0 0 8px; padding-left: 20px; }
+            .helper-announcement-content li + li { margin-top: 3px; }
+            .helper-announcement-content blockquote { margin: 7px 0; padding: 7px 9px; border-left: 3px solid #e0ad4f; background: rgba(255,255,255,.6); }
+            .helper-announcement-content code { padding: 1px 4px; border-radius: 4px; background: #f2e7c9; font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+            .helper-announcement-content pre { margin: 7px 0; padding: 8px; overflow-x: auto; border-radius: 7px; background: #f2e7c9; white-space: pre-wrap; }
+            .helper-announcement-content pre code { padding: 0; background: transparent; }
+            .helper-announcement-content a { color: #8a5600; font-weight: 700; text-decoration: underline; }
+            .helper-announcement-content hr { border: 0; border-top: 1px solid #e6c889; margin: 9px 0; }
             .helper-auth-card { gap: 10px; padding: 16px; border: 1px solid var(--mh-line); border-radius: 13px; background: linear-gradient(145deg, #fff, #fafafd); }
             .helper-auth-card > div:nth-child(2) { min-width: 0; }
             .helper-auth-card strong { font-size: 14px; }
@@ -1935,7 +1947,13 @@
         currentAnnouncementId = id;
         document.getElementById('helper-announcement-title').textContent = String(announcement.title || '系统公告');
         document.getElementById('helper-announcement-id').textContent = `#${id}`;
-        document.getElementById('helper-announcement-content').textContent = content;
+        const contentEl = document.getElementById('helper-announcement-content');
+        const contentHtml = String(announcement && announcement.contentHtml || '').trim();
+        if (announcement && announcement.format === 'markdown' && contentHtml) {
+            contentEl.innerHTML = contentHtml;
+        } else {
+            contentEl.textContent = content;
+        }
         document.getElementById('helper-announcement').hidden = false;
         rememberShownAnnouncementId(id);
     }
