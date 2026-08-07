@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.19
-// @description  V3.8.19：新增公益互助模式，可只助力他人且不领取 credit/rcredit。
+// @version      3.8.20
+// @description  V3.8.20：取消周期性 join 心跳，启动互助时仅登记一次。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.8.19';
+    const CURRENT_VERSION = '3.8.20';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -46,7 +46,6 @@
     const TAB_ID_KEY = 'musicHelperTabId';
     const LATEST_SHOWN_ANNOUNCEMENT_ID_KEY = 'musicHelperLatestShownAnnouncementId';
     const VOLUNTEER_MODE_KEY = 'musicHelperVolunteerMode';
-    const JOIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
     const TAB_LOCK_STALE_MS = 15000;
@@ -57,7 +56,6 @@
     let isHelperRunning = false;
     let monitorTimer = null;
     let activePlaybackCleanup = null;
-    let joinTimer = null;
     let nextJobRetryTimer = null;
     let consecutiveNoTaskCount = 0;
     let nextRequestInFlight = false;
@@ -2228,7 +2226,6 @@
         isHelperRunning = false;
         activeJoinState = null;
         clearPlaybackMonitor();
-        clearInterval(joinTimer);
         resetNoTaskRetryState();
         const toggleButton = document.getElementById('toggle-helper');
         const helperInfo = document.getElementById('helper-info');
@@ -2257,7 +2254,7 @@
             infoEl.innerText = '正在提交互助目标...';
         }
         try {
-            const joined = await joinSelf({ mid, mtp, musicMeta: null, musicMetaFetchedAt: 0 });
+            const joined = await joinSelf({ mid, mtp, musicMeta: null });
             if (!joined) {
                 if (infoEl) infoEl.innerText = '服务器连接失败，未能提交互助目标。';
                 return;
@@ -2284,7 +2281,7 @@
         resetNoTaskRetryState();
         activeJoinState = volunteerMode
             ? { volunteer: true }
-            : { mid, mtp, musicMeta: null, musicMetaFetchedAt: 0 };
+            : { mid, mtp, musicMeta: null };
         const volunteerCheckbox = document.getElementById('volunteer-mode');
         if (volunteerCheckbox) volunteerCheckbox.disabled = true;
         document.getElementById('toggle-helper').innerText = '停止互助';
@@ -2314,15 +2311,6 @@
 
         if (!volunteerMode) notifyShortTrackPenalty(activeJoinState && activeJoinState.musicMeta);
 
-        joinTimer = setInterval(() => {
-            if (!activeJoinState) return;
-            joinSelf(activeJoinState).then((joined) => {
-                if (joined && isApiErrorPayload(joined) && isJoinBlockingError(joined.error)) {
-                    stopHelper();
-                    document.getElementById('helper-info').innerText = getPayloadErrorText(joined, joined.error);
-                }
-            }).catch(() => {});
-        }, JOIN_REFRESH_INTERVAL_MS);
         playNext();
     }
 
@@ -2340,12 +2328,8 @@
             if (d && d.participant) updateParticipantInfo(d.participant);
             return d;
         }
-        const shouldRefreshMusicMeta = !state.musicMeta
-            || !Number.isFinite(Number(state.musicMetaFetchedAt || 0))
-            || (Date.now() - Number(state.musicMetaFetchedAt || 0)) >= JOIN_REFRESH_INTERVAL_MS;
-        if (shouldRefreshMusicMeta) {
+        if (!state.musicMeta) {
             state.musicMeta = await resolveMusicMeta(state.mid, state.mtp);
-            state.musicMetaFetchedAt = Date.now();
         }
         const payload = { musicId: `${state.mtp}:${state.mid}` };
         if (state.musicMeta) payload.musicMeta = state.musicMeta;
