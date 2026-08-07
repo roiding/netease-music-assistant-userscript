@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.22
-// @description  V3.8.22：同一 Helper 每日帮助同一用户最多 5 次，并支持未完成任务关闭取消。
+// @version      3.8.23
+// @description  V3.8.23：同一 Helper 每日帮助同一用户最多 10 次，并支持未完成任务关闭取消。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.8.22';
+    const CURRENT_VERSION = '3.8.23';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -48,7 +48,7 @@
     const VOLUNTEER_MODE_KEY = 'musicHelperVolunteerMode';
     const DAILY_OWNER_HELP_COUNTS_KEY = 'musicHelperDailyOwnerHelpCounts:v1';
     const PENDING_PLAY_JOB_KEY = 'musicHelperPendingPlayJob:v1';
-    const DAILY_OWNER_HELP_LIMIT = 5;
+    const DAILY_OWNER_HELP_LIMIT = 10;
     const MAX_EXCLUDED_OWNER_IDS = 64;
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
