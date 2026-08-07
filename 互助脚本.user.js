@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.8.18
-// @description  V3.8.18：支持当月月卡 Helper CDK，并展示 Helper 有效期。
+// @version      3.8.19
+// @description  V3.8.19：新增公益互助模式，可只助力他人且不领取 credit/rcredit。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.8.18';
+    const CURRENT_VERSION = '3.8.19';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -45,6 +45,7 @@
     const TAB_LOCK_KEY = 'musicHelperActiveTabLock';
     const TAB_ID_KEY = 'musicHelperTabId';
     const LATEST_SHOWN_ANNOUNCEMENT_ID_KEY = 'musicHelperLatestShownAnnouncementId';
+    const VOLUNTEER_MODE_KEY = 'musicHelperVolunteerMode';
     const JOIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
     const TOKEN_REFRESH_SKEW_MS = 5000;
     const TAB_LOCK_HEARTBEAT_MS = 5000;
@@ -965,7 +966,22 @@
 
     function canCurrentUserParticipate() {
         if (!currentUserState || currentUserState.isBanned || currentUserState.isHelperRestricted) return false;
-        return isCurrentUserHelper() || isCommunityHelpDayActive();
+        return isVolunteerModeEnabled() || isCurrentUserHelper() || isCommunityHelpDayActive();
+    }
+
+    function isVolunteerModeEnabled() {
+        return GM_getValue(VOLUNTEER_MODE_KEY, false) === true;
+    }
+
+    function updateVolunteerModeUI() {
+        const enabled = isVolunteerModeEnabled();
+        const checkbox = document.getElementById('volunteer-mode');
+        const targetRow = document.getElementById('helper-target-row');
+        const targetHint = document.getElementById('helper-target-hint');
+        if (checkbox) checkbox.checked = enabled;
+        if (targetRow) targetRow.hidden = enabled;
+        if (targetHint) targetHint.innerText = enabled ? '无需配置互助目标' : '歌曲或专辑 ID';
+        updatePrimaryAction();
     }
 
     function activateHelperTab(tabName, persist = true) {
@@ -986,8 +1002,9 @@
         const registerButton = document.getElementById('helper-register-btn');
         if (toggleButton && !isHelperRunning) {
             const hasTarget = !!(currentParticipantState && currentParticipantState.music_id);
+            const volunteerMode = isVolunteerModeEnabled();
             toggleButton.innerText = canCurrentUserParticipate()
-                ? (isCurrentUserHelper() ? '启动助力并保存目标' : '全民互助日：启动助力')
+                ? (volunteerMode ? '启动公益互助' : (isCurrentUserHelper() ? '启动助力并保存目标' : '全民互助日：启动助力'))
                 : (hasTarget ? '更新互助目标' : '保存互助目标');
             toggleButton.style.background = '';
         }
@@ -1006,7 +1023,9 @@
         }
         const restricted = !!currentUserState.isHelperRestricted;
         const accountType = helperAccountType(currentUserState);
-        const permission = isCurrentUserHelper()
+        const permission = isVolunteerModeEnabled() && !restricted
+            ? '可以参与公益互助：只帮助他人，不要求 Helper 身份，也不获得 credit / rcredit。'
+            : isCurrentUserHelper()
             ? '可以提交目标、接取助力任务并赚取 credit / rcredit。'
             : isCommunityHelpDayActive() && !restricted
                 ? '今天是全民互助日，可以临时接取助力任务并赚取奖励。'
@@ -1347,8 +1366,12 @@
                         </div>
 
                         <section class="helper-tab-panel" data-helper-panel="help" role="tabpanel">
-                            <div class="helper-section-heading"><strong>互助目标</strong><span>歌曲或专辑 ID</span></div>
-                            <div class="helper-target-row">
+                            <div class="helper-section-heading"><strong>互助目标</strong><span id="helper-target-hint">歌曲或专辑 ID</span></div>
+                            <label class="helper-volunteer-option">
+                                <input id="volunteer-mode" type="checkbox" ${GM_getValue(VOLUNTEER_MODE_KEY, false) === true ? 'checked' : ''}>
+                                <span><strong>公益互助</strong><small>只助力他人，不获得 credit 或 rcredit；无需设置目标，也不会删除已保存目标。</small></span>
+                            </label>
+                            <div id="helper-target-row" class="helper-target-row">
                                 <select id="my-music-type" aria-label="目标类型">
                                     <option value="song" ${savedType === 'song' ? 'selected' : ''}>单曲</option>
                                     <option value="album" ${savedType === 'album' ? 'selected' : ''}>专辑</option>
@@ -1517,6 +1540,12 @@
             .helper-section-heading strong { font-size: 14px; }
             .helper-section-heading span { color: var(--mh-muted); font-size: 10px; }
             .helper-target-row { display: grid; grid-template-columns: 76px 1fr; }
+            .helper-target-row[hidden] { display: none; }
+            .helper-volunteer-option { display: flex; align-items: flex-start; gap: 9px; padding: 10px 11px; border: 1px solid #dce7e3; border-radius: 11px; background: #f4fbf8; cursor: pointer; }
+            .helper-volunteer-option input { flex: none; margin: 2px 0 0; accent-color: #128276; }
+            .helper-volunteer-option span { display: grid; gap: 3px; min-width: 0; }
+            .helper-volunteer-option strong { color: #126b62; font-size: 12px; }
+            .helper-volunteer-option small { color: #68817c; font-size: 10px; line-height: 1.45; }
             .helper-target-row select, .helper-target-row input, .helper-credential-form input {
                 min-width: 0;
                 padding: 9px 10px;
@@ -1621,6 +1650,10 @@
             location.reload();
         };
         document.getElementById('toggle-helper').onclick = toggleHelper;
+        document.getElementById('volunteer-mode').onchange = (event) => {
+            GM_setValue(VOLUNTEER_MODE_KEY, !!event.target.checked);
+            updateVolunteerModeUI();
+        };
         document.getElementById('helper-register-btn').onclick = startHelperRegistration;
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
@@ -1629,6 +1662,8 @@
         document.getElementById('manual-btn').onclick = () => { triggerIframePlay(); document.getElementById('manual-btn').style.display='none'; };
         document.getElementById('min-btn').onclick = () => { document.getElementById('music-helper-panel').style.display='none'; document.getElementById('helper-toggle-btn').style.display='flex'; };
         document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; } };
+
+        updateVolunteerModeUI();
 
         fetchConfig();
         void refreshAnnouncement();
@@ -2175,16 +2210,21 @@
         }
         const mid = document.getElementById('my-music-id').value.trim();
         const mtp = document.getElementById('my-music-type').value;
-        if(!mid) return;
-        GM_setValue('myMusicId', mid); GM_setValue('myMusicType', mtp);
+        const volunteerMode = isVolunteerModeEnabled();
+        if (!volunteerMode && !mid) return;
+        if (!volunteerMode) {
+            GM_setValue('myMusicId', mid);
+            GM_setValue('myMusicType', mtp);
+        }
         if (!canCurrentUserParticipate()) {
             await submitConsumerTarget(mid, mtp);
             return;
         }
-        if(isHelperRunning) stopHelper(); else await startHelper(mid, mtp);
+        if(isHelperRunning) stopHelper(); else await startHelper(mid, mtp, volunteerMode);
     }
 
     function stopHelper() {
+        const wasVolunteer = !!(activeJoinState && activeJoinState.volunteer);
         isHelperRunning = false;
         activeJoinState = null;
         clearPlaybackMonitor();
@@ -2192,15 +2232,19 @@
         resetNoTaskRetryState();
         const toggleButton = document.getElementById('toggle-helper');
         const helperInfo = document.getElementById('helper-info');
+        const volunteerCheckbox = document.getElementById('volunteer-mode');
+        if (volunteerCheckbox) volunteerCheckbox.disabled = false;
         if (toggleButton) {
             const hasTarget = !!(currentParticipantState && currentParticipantState.music_id);
             toggleButton.innerText = canCurrentUserParticipate()
-                ? (isCurrentUserHelper() ? '启动助力并保存目标' : '全民互助日：启动助力')
+                ? (isVolunteerModeEnabled() ? '启动公益互助' : (isCurrentUserHelper() ? '启动助力并保存目标' : '全民互助日：启动助力'))
                 : (hasTarget ? '更新互助目标' : '保存互助目标');
             toggleButton.style.background = '';
         }
         if (helperInfo) {
-            helperInfo.innerText = '已停止本机互助播放；已保存的 ID 仍会按剩余额度被其他人互助。';
+            helperInfo.innerText = wasVolunteer
+                ? '已停止公益互助；期间完成的任务不会产生 credit 或 rcredit 奖励。'
+                : '已停止本机互助播放；已保存的 ID 仍会按剩余额度被其他人互助。';
         }
     }
 
@@ -2235,14 +2279,20 @@
         }
     }
 
-    async function startHelper(mid, mtp) {
+    async function startHelper(mid, mtp, volunteerMode = false) {
         isHelperRunning = true;
         resetNoTaskRetryState();
-        activeJoinState = { mid, mtp, musicMeta: null, musicMetaFetchedAt: 0 };
+        activeJoinState = volunteerMode
+            ? { volunteer: true }
+            : { mid, mtp, musicMeta: null, musicMetaFetchedAt: 0 };
+        const volunteerCheckbox = document.getElementById('volunteer-mode');
+        if (volunteerCheckbox) volunteerCheckbox.disabled = true;
         document.getElementById('toggle-helper').innerText = '停止互助';
         document.getElementById('toggle-helper').style.background = '#666';
         document.getElementById('helper-info').style.display = 'block';
-        document.getElementById('helper-info').innerText = '正在加入互助队列...';
+        document.getElementById('helper-info').innerText = volunteerMode
+            ? '正在加入公益互助队列，本模式不会获得 credit 或 rcredit...'
+            : '正在加入互助队列...';
 
         const joined = await joinSelf(activeJoinState);
         if (!joined) {
@@ -2262,7 +2312,7 @@
             return;
         }
 
-        notifyShortTrackPenalty(activeJoinState && activeJoinState.musicMeta);
+        if (!volunteerMode) notifyShortTrackPenalty(activeJoinState && activeJoinState.musicMeta);
 
         joinTimer = setInterval(() => {
             if (!activeJoinState) return;
@@ -2278,6 +2328,18 @@
 
     async function joinSelf(state) {
         if (!state) return false;
+        if (state.volunteer) {
+            const d = await callAPI('POST', '/join', { volunteer: true });
+            if (d && d.user) {
+                currentUserState = d.user;
+                updatePrimaryAction();
+            }
+            if (d && d.loginUser) {
+                document.getElementById('login-status').innerText = `已登录: ${d.loginUser} · ${isCurrentUserHelper() ? 'Helper' : '消费用户'}`;
+            }
+            if (d && d.participant) updateParticipantInfo(d.participant);
+            return d;
+        }
         const shouldRefreshMusicMeta = !state.musicMeta
             || !Number.isFinite(Number(state.musicMetaFetchedAt || 0))
             || (Date.now() - Number(state.musicMetaFetchedAt || 0)) >= JOIN_REFRESH_INTERVAL_MS;
@@ -2362,7 +2424,7 @@
         nextRequestInFlight = true;
         let data;
         try {
-            data = await callAPI('GET', '/next');
+            data = await callAPI('GET', activeJoinState && activeJoinState.volunteer ? '/next?volunteer=1' : '/next');
         } finally {
             nextRequestInFlight = false;
         }
@@ -2421,7 +2483,8 @@
             let [type, id] = data.musicId.includes(':') ? data.musicId.split(':') : ['song', data.musicId];
             const jobId = data.jobId;
             const creditCost = Number(data.creditCost || 1);
-            const rewardCredit = Number(data.rewardCredit || creditCost);
+            const volunteerJob = data.volunteer === true;
+            const rewardCredit = volunteerJob ? 0 : Number(data.rewardCredit || creditCost);
             const earnsRcredit = !!(data.participant && data.participant.rcredit_reward_active);
             const rcreditRate = Number(economyState && economyState.rewards && economyState.rewards.rcreditsPerCredit || 1);
             const rewardAmount = earnsRcredit ? Math.floor(rewardCredit * rcreditRate) : rewardCredit;
@@ -2662,7 +2725,7 @@
                     const speedWarning = playbackRateInvalid ? '\n检测到倍速播放，请恢复 1x 后继续' : '';
                     const displayDurationMs = expectedDurationMs > 0 ? expectedDurationMs : dur;
                     const displayListenedMs = displayDurationMs > 0 ? Math.min(localListenedMs, displayDurationMs) : localListenedMs;
-                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]\n歌曲时长: ${formatTime(displayDurationMs)}\n当前进度: ${formatTime(cur)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n本次完成可得: ${rewardAmount} ${rewardLabel}${speedWarning}`;
+                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]${volunteerJob ? ' · 公益' : ''}\n歌曲时长: ${formatTime(displayDurationMs)}\n当前进度: ${formatTime(cur)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n${volunteerJob ? '公益模式：本次不获得 credit 或 rcredit' : `本次完成可得: ${rewardAmount} ${rewardLabel}`}${speedWarning}`;
 
                     const enoughSongListen = displayListenedMs >= requiredListenMs;
                     const songFinished = (cur >= dur - 2000 || (state === 'stop' && cur > 0))
