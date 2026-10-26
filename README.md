@@ -26,8 +26,20 @@ The script runs on:
 Linux.do OAuth binds the local account. After login, the script stores the
 Worker's own `musicHelperToken` with Tampermonkey storage. A consumer user may
 submit a target and recharge credit immediately; the separate "开通 Helper"
-action enables helping others and earning rewards through the existing payment
-or CDK flow.
+action opens the account-panel shop for limited-stock daily, weekly, monthly or
+permanent Helper purchases. Prices and available inventory come from the admin
+configuration. No CDK is required; an "已有 CDK" link preserves the existing
+redemption flow. The LDC cashier still opens outside the panel and returns to
+music; the panel checks the order and refreshes the access token automatically.
+
+Daily and weekly renewals add 24 hours / 7 days to the remaining qualification.
+Monthly cards retain the calendar-month rule: expiry is next month's first day
+at 00:00 Beijing time. Existing permanent accounts are not changed. Buying
+qualification does not recharge credit or override the monthly dispatch rules.
+Read and confirm the risk notice and complete embedded verification before
+buying. If payment creation is uncertain, use the retained order's query action
+instead of creating another payment; unresolved payments retain their inventory
+until verified by the gateway or administrator.
 
 When a target is submitted as an album ID, the script will upload the album's
 track metadata so the backend can randomly assign one concrete song and reserve
