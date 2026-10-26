@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.9.1
-// @description  V3.9.1：移除 Helper 直购面板的人机验证，保留风险确认与限量购买。
+// @version      3.9.2
+// @description  V3.9.2：永久 Helper 沿用原动态定价，在面板同步 Linux.do 活跃度并购买。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.9.1';
+    const CURRENT_VERSION = '3.9.2';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -79,6 +79,9 @@
     let announcementCheckedAfterLogin = false;
     let cancelBeaconJobId = '';
     let helperShopState = null;
+    let helperPricingState = null;
+    let helperPricingCleanup = null;
+    let helperPricingBusy = false;
     let helperPurchaseBusy = false;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
@@ -179,8 +182,8 @@
         };
 
         if (!probeToken || !username) {
-            relayResult({ ok: false, errorMessage: 'Linux.do 同步参数不完整，请返回注册页刷新后重试。' });
-            showStatus('Linux.do 同步参数不完整，请返回注册页刷新后重试。');
+            relayResult({ ok: false, errorMessage: 'Linux.do 同步参数不完整，请返回互助面板刷新后重试。' });
+            showStatus('Linux.do 同步参数不完整，请返回互助面板刷新后重试。');
             return;
         }
 
@@ -203,7 +206,7 @@
                         ? 'Linux.do 当前拒绝了画像读取，请确认本浏览器已经登录 Linux.do。'
                         : 'Linux.do 活跃度画像读取失败，请稍后重试。',
                 });
-                showStatus('Linux.do 活跃度画像读取失败，请返回注册页重试。');
+                showStatus('Linux.do 活跃度画像读取失败，请返回互助面板重试。');
                 return;
             }
 
@@ -220,7 +223,7 @@
                 ok: false,
                 errorMessage: 'Linux.do 活跃度画像读取失败：' + String(error && error.message || error || 'request_failed'),
             });
-            showStatus('Linux.do 活跃度画像读取失败，请返回注册页重试。');
+            showStatus('Linux.do 活跃度画像读取失败，请返回互助面板重试。');
         }
     }
 
@@ -1460,7 +1463,7 @@
     function initUI() {
         const token = GM_getValue(TOKEN_KEY, '');
         const params = new URLSearchParams(window.location.search);
-        const hasPendingAuthRedirect = params.has('music_helper_ticket') || params.has('music_helper_error') || params.has('music_helper_topup_order') || params.has('music_helper_purchase_order');
+        const hasPendingAuthRedirect = params.has('music_helper_ticket') || params.has('music_helper_error') || params.has('music_helper_topup_order') || params.has('music_helper_purchase_order') || params.has('music_helper_shop');
         const savedType = GM_getValue('myMusicType', 'song');
         const savedTab = GM_getValue('musicHelperActiveTab', 'help');
         const container = document.createElement('div');
@@ -1555,6 +1558,11 @@
                             <div id="helper-shop" hidden>
                                 <div class="helper-section-heading"><strong>Helper 直购</strong><button id="helper-shop-refresh" type="button">刷新</button></div>
                                 <p id="helper-shop-message" class="helper-card-copy" role="status"></p>
+                                <div id="helper-permanent-pricing" class="helper-account-card" hidden>
+                                    <strong>永久资格：沿用原动态定价</strong>
+                                    <p id="helper-permanent-pricing-note" class="helper-card-copy"></p>
+                                    <button id="helper-permanent-sync" class="helper-btn helper-btn-ghost" type="button">同步 Linux.do 活跃度 / 永久售价</button>
+                                </div>
                                 <div id="helper-shop-plans"></div>
                                 <details class="helper-account-card"><summary>异常播放风险提示与使用承诺</summary>
                                     <p>互助或自动化播放可能被网易云识别为异常行为，导致播放无效、数据清除、限流、警告、账号封禁或音乐人权益受到影响。本项目为非官方、非商业性质，仅限本人及亲友间学习交流，不得用于刷量、榜单操纵、有偿服务或商业推广。</p>
@@ -1822,6 +1830,7 @@
         };
         document.getElementById('helper-register-btn').onclick = startHelperRegistration;
         document.getElementById('helper-shop-refresh').onclick = refreshHelperShop;
+        document.getElementById('helper-permanent-sync').onclick = syncHelperPermanentPrice;
         document.getElementById('helper-shop-plans').onclick = async (event) => {
             const button = event.target.closest('[data-helper-plan]');
             if (button) await buyHelperPlan(button.dataset.helperPlan);
@@ -1883,8 +1892,14 @@
         document.getElementById('helper-shop-message').innerText = text;
     }
 
-    async function refreshHelperShop() {
-        const result = await callAPI('GET', '/helper/shop');
+    async function refreshHelperShop(supplied = null) {
+        let result = supplied && supplied.plans ? supplied : helperPricingState
+            ? await callAPI('POST', '/helper/profile-probe', helperPricingState)
+            : await callAPI('GET', '/helper/shop');
+        if (result && result.error === 'profile_sync_required') {
+            helperPricingState = null;
+            result = await callAPI('GET', '/helper/shop');
+        }
         if (!result || !result.plans) {
             helperShopMessage(getPayloadErrorText(result, '暂时无法读取商品，请稍后重试。'));
             return;
@@ -1900,12 +1915,17 @@
         const gate = result.registrationGate || {};
         const permanent = result.user.isRegistered && !result.user.helperExpiresAt;
         const openOrder = result.orders.some((order) => ['pending', 'paid_review'].includes(order.status));
+        const dynamicPlan = result.plans.find((plan) => plan.id === 'permanent');
+        document.getElementById('helper-permanent-pricing').hidden = permanent || result.user.isHelperRestricted || !dynamicPlan || !dynamicPlan.enabled;
+        document.getElementById('helper-permanent-pricing-note').innerText = result.pricing
+            ? `今日基准价 ${result.pricing.baseMedianLdc} LDC。${result.pricing.profileNote}` : '永久资格需要同步 Linux.do 活跃度后计算售价。';
+        document.getElementById('helper-permanent-sync').disabled = helperPricingBusy || openOrder || !result.pricingProbe;
         helperShopMessage(gate.blocked ? (gate.reason || '当前暂停 LDC 购买') : '下单锁定一个名额；付款后自动开通。续购日卡/周卡可叠加剩余时间，月卡只到当月月底。');
         document.getElementById('helper-shop-plans').innerHTML = result.plans.map((plan) => {
-            const disabled = !plan.enabled || plan.stock < 1 || gate.blocked || permanent || result.user.isHelperRestricted || openOrder;
-            return `<div class="helper-account-card"><div class="helper-account-head"><strong>${escapeHtml(plan.label)}</strong><span>${escapeHtml(plan.priceLdc)} LDC</span></div>
+            const disabled = !plan.enabled || plan.stock < 1 || gate.blocked || permanent || result.user.isHelperRestricted || openOrder || plan.requiresProfileSync;
+            return `<div class="helper-account-card"><div class="helper-account-head"><strong>${escapeHtml(plan.label)}</strong><span>${plan.requiresProfileSync ? '同步后显示售价' : `${escapeHtml(plan.priceLdc)} LDC`}</span></div>
                 <p>${escapeHtml(plan.durationText)}<br>${plan.enabled ? `剩余可售 ${plan.stock} 个` : '暂未上架'}</p>
-                <button class="helper-btn helper-btn-teal" type="button" data-helper-plan="${plan.id}" ${disabled ? 'disabled' : ''}>${permanent ? '已永久开通' : !plan.enabled ? '未上架' : plan.stock < 1 ? '已售罄' : openOrder ? '请先处理已有订单' : '购买'}</button></div>`;
+                <button class="helper-btn helper-btn-teal" type="button" data-helper-plan="${plan.id}" ${disabled ? 'disabled' : ''}>${permanent ? '已永久开通' : !plan.enabled ? '未上架' : plan.stock < 1 ? '已售罄' : openOrder ? '请先处理已有订单' : plan.requiresProfileSync ? '请先同步永久售价' : '购买'}</button></div>`;
         }).join('');
         const labels = { pending: '待付款 / 待确认', paid: '已开通', expired: '已关闭并释放库存', failed: '失败', paid_review: '已付款，待管理员核对或退款', refunded: '已记录外部退款' };
         document.getElementById('helper-shop-orders').innerHTML = result.orders.map((order) => `<div class="helper-account-card">
@@ -1915,16 +1935,76 @@
         link.href = (authConfig && authConfig.cdkRegisterUrl) || `${SERVICE_ORIGINS[0]}/register-cdk`;
     }
 
+    function syncHelperPermanentPrice() {
+        const probe = helperShopState && helperShopState.pricingProbe;
+        if (!probe || !probe.openUrl || helperPricingBusy) return;
+        if (helperPricingCleanup) helperPricingCleanup();
+        helperPricingBusy = true;
+        helperPricingState = null;
+        const button = document.getElementById('helper-permanent-sync');
+        button.disabled = true;
+        let consumed = false;
+        let listener = null;
+        let timer = null;
+        const key = registrationProbeStorageKey(probe.probeToken);
+        const cleanup = () => {
+            if (listener !== null) GM_removeValueChangeListener(listener);
+            if (timer) clearTimeout(timer);
+            GM_deleteValue(key);
+            helperPricingCleanup = null;
+        };
+        helperPricingCleanup = cleanup;
+        const consume = async (raw) => {
+            const payload = typeof raw === 'string' ? safeJSON(raw) : raw;
+            if (consumed || !payload || payload.probeToken !== probe.probeToken || payload.source !== LINUXDO_PROBE_SOURCE) return;
+            consumed = true;
+            cleanup();
+            try {
+                if (!payload.ok) return helperShopMessage(payload.errorMessage || '活跃度同步失败，请登录 Linux.do 后重试。');
+                const draft = { probeToken: probe.probeToken, cardPayload: payload.cardPayload };
+                const result = await callAPI('POST', '/helper/profile-probe', draft);
+                if (!result || !result.plans) return helperShopMessage(getPayloadErrorText(result, '同步失败'));
+                helperPricingState = draft;
+                await refreshHelperShop(result);
+                helperShopMessage('永久售价已按原来的每日基准价和实时活跃度规则计算。');
+            } finally {
+                helperPricingBusy = false;
+                button.disabled = false;
+            }
+        };
+        listener = GM_addValueChangeListener(key, (_name, _old, value) => { void consume(value); });
+        timer = setTimeout(() => {
+            consumed = true;
+            cleanup();
+            helperPricingBusy = false;
+            button.disabled = false;
+            helperShopMessage('同步超时，请确认同一浏览器已登录 Linux.do，再重新同步。');
+        }, 90000);
+        const popup = window.open(probe.openUrl, 'music-helper-linuxdo-probe', 'width=980,height=760');
+        if (!popup) {
+            consumed = true;
+            cleanup();
+            helperPricingBusy = false;
+            button.disabled = false;
+            return helperShopMessage('浏览器拦截了同步窗口，请允许弹窗后重试。');
+        }
+        helperShopMessage('正在从 Linux.do 同步活跃度，完成后自动计算永久售价；日卡、周卡、月卡无需同步。');
+        void consume(GM_getValue(key, ''));
+    }
+
     async function buyHelperPlan(planId) {
         if (helperPurchaseBusy || !helperShopState) return;
         const plan = helperShopState.plans.find((item) => item.id === planId);
         if (!plan) return;
+        if (plan.id === 'permanent' && helperPricingBusy) return helperShopMessage('正在同步永久售价，请稍候。');
+        if (plan.requiresProfileSync) return helperShopMessage('请先同步 Linux.do 活跃度，计算永久售价。');
         if (!document.getElementById('helper-shop-consent').checked) return helperShopMessage('请先阅读并勾选风险提示和使用承诺。');
         if (!window.confirm(`购买${plan.label}，支付 ${plan.priceLdc} LDC。\n${plan.durationText}\n只开通 Helper 资格，不充值 credit；每月接单规则和受限状态仍然生效。确认继续？`)) return;
         helperPurchaseBusy = true;
         try {
             helperShopMessage('正在锁定库存并创建付款订单...');
             const result = await callAPI('POST', '/helper/orders', { planId, expectedPriceLdc: plan.priceLdc,
+                ...(plan.id === 'permanent' && helperPricingState ? helperPricingState : {}),
                 riskAcknowledged: true, riskNoticeVersion: helperShopState.riskNoticeVersion });
             if (result && result.paymentUrl && result.order && result.order.status === 'pending') {
                 stopHelper();
@@ -3014,6 +3094,7 @@
         url.searchParams.delete('music_helper_error');
         url.searchParams.delete('music_helper_topup_order');
         url.searchParams.delete('music_helper_purchase_order');
+        url.searchParams.delete('music_helper_shop');
         window.history.replaceState(null, '', url.pathname + (url.search ? url.search : '') + url.hash);
     }
 
@@ -3038,6 +3119,7 @@
         const loginError = params.get('music_helper_error');
         const topupOrder = params.get('music_helper_topup_order');
         const helperOrder = params.get('music_helper_purchase_order');
+        const openShop = params.get('music_helper_shop') === '1';
         if (ticket) {
             GM_setValue(ERROR_KEY, '');
             const claimResult = await claimTicket(ticket);
@@ -3067,6 +3149,11 @@
                 alert('支付已返回。请先登录，再从账户面板查看购买记录。');
                 cleanLoginParams();
             }
+        }
+        if (openShop) {
+            if (GM_getValue(TOKEN_KEY, '')) await startHelperRegistration();
+            else activateHelperTab('account');
+            cleanLoginParams();
         }
     }, 1500);
 })();

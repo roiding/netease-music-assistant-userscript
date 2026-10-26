@@ -36,6 +36,12 @@ Daily and weekly renewals add 24 hours / 7 days to the remaining qualification.
 Monthly cards retain the calendar-month rule: expiry is next month's first day
 at 00:00 Beijing time. Existing permanent accounts are not changed. Buying
 qualification does not recharge credit or override the monthly dispatch rules.
+Since 3.9.2, permanent qualification reuses the original daily median and Linux.do
+profile pricing. Use the panel's "同步 Linux.do 活跃度 / 永久售价" action before
+buying permanent access. The userscript reads the profile in the signed-in
+Linux.do popup and transfers it through local Tampermonkey storage; no separate
+register storefront is needed. Daily/weekly/monthly prices remain admin-configured
+and do not require profile sync. Existing pending orders keep their locked amount.
 Read and confirm the risk notice before buying. From 3.9.1 onward, the panel
 shop has no embedded Cloudflare verification widget. Other redemption pages
 retain their existing verification. If payment creation is uncertain, use the retained order's query action
