@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      3.9.0
-// @description  V3.9.0：面板内直购限量日卡、周卡、当月月卡和永久 Helper，支持续购与订单查询。
+// @version      3.9.1
+// @description  V3.9.1：移除 Helper 直购面板的人机验证，保留风险确认与限量购买。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '3.9.0';
+    const CURRENT_VERSION = '3.9.1';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -79,7 +79,6 @@
     let announcementCheckedAfterLogin = false;
     let cancelBeaconJobId = '';
     let helperShopState = null;
-    let helperPurchaseToken = '';
     let helperPurchaseBusy = false;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
@@ -1562,7 +1561,6 @@
                                     <p>如收到平台风险提示请立即停止。第三方平台规则及处置结果由用户自行评估并依法承担责任。在法律允许范围内，维护者不对平台处置、间接损失或违规使用后果承担责任；依法不能免除的责任除外。</p>
                                 </details>
                                 <label class="helper-card-copy"><input id="helper-shop-consent" type="checkbox">我已阅读并理解风险，承诺仅限本人及亲友间学习交流，不用于刷量、商业推广或其他违规用途。</label>
-                                <div id="helper-shop-verification"></div>
                                 <div id="helper-shop-orders"></div>
                                 <a id="helper-cdk-link" target="_blank" rel="noopener noreferrer">已有 CDK？继续兑换</a>
                             </div>
@@ -1832,13 +1830,6 @@
             const query = event.target.closest('[data-helper-query]');
             if (query) await queryHelperPurchase(query.dataset.helperQuery);
         };
-        window.addEventListener('message', (event) => {
-            const frame = document.getElementById('helper-purchase-verification');
-            if (!frame || event.source !== frame.contentWindow || !isServiceOrigin(event.origin)) return;
-            if (event.data && event.data.source === 'music-helper-purchase-verification') {
-                helperPurchaseToken = String(event.data.token || '');
-            }
-        });
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
         document.getElementById('merchant-bind-btn').onclick = bindMerchantCredential;
@@ -1922,16 +1913,6 @@
             ${order.status === 'pending' ? `${order.paymentUrl ? `<a class="helper-btn helper-btn-teal" href="${escapeHtml(order.paymentUrl)}">继续付款</a>` : ''}<button type="button" class="helper-btn helper-btn-ghost" data-helper-query="${escapeHtml(order.orderNo)}">查询付款结果</button>` : ''}</div>`).join('');
         const link = document.getElementById('helper-cdk-link');
         link.href = (authConfig && authConfig.cdkRegisterUrl) || `${SERVICE_ORIGINS[0]}/register-cdk`;
-        const verification = document.getElementById('helper-shop-verification');
-        if (result.verificationUrl && !document.getElementById('helper-purchase-verification')) {
-            helperPurchaseToken = '';
-            const frame = document.createElement('iframe');
-            frame.id = 'helper-purchase-verification';
-            frame.src = result.verificationUrl;
-            frame.title = '购买验证';
-            frame.style.cssText = 'width:100%;height:75px;border:0;display:block;margin:10px 0';
-            verification.replaceChildren(frame);
-        }
     }
 
     async function buyHelperPlan(planId) {
@@ -1939,21 +1920,18 @@
         const plan = helperShopState.plans.find((item) => item.id === planId);
         if (!plan) return;
         if (!document.getElementById('helper-shop-consent').checked) return helperShopMessage('请先阅读并勾选风险提示和使用承诺。');
-        if (helperShopState.verificationUrl && !helperPurchaseToken) return helperShopMessage('请先完成购买验证。');
         if (!window.confirm(`购买${plan.label}，支付 ${plan.priceLdc} LDC。\n${plan.durationText}\n只开通 Helper 资格，不充值 credit；每月接单规则和受限状态仍然生效。确认继续？`)) return;
         helperPurchaseBusy = true;
         try {
             helperShopMessage('正在锁定库存并创建付款订单...');
             const result = await callAPI('POST', '/helper/orders', { planId, expectedPriceLdc: plan.priceLdc,
-                riskAcknowledged: true, riskNoticeVersion: helperShopState.riskNoticeVersion, turnstileToken: helperPurchaseToken });
+                riskAcknowledged: true, riskNoticeVersion: helperShopState.riskNoticeVersion });
             if (result && result.paymentUrl && result.order && result.order.status === 'pending') {
                 stopHelper();
                 window.location.href = result.paymentUrl;
                 return;
             }
             const message = result && result.error ? getPayloadErrorText(result, '购买失败') : '订单已保留，请查询付款结果；持续异常请联系管理员。';
-            const frame = document.getElementById('helper-purchase-verification');
-            if (frame) { helperPurchaseToken = ''; frame.src = frame.src; }
             await refreshHelperShop();
             helperShopMessage(message);
         } finally {

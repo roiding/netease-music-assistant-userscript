@@ -36,8 +36,9 @@ Daily and weekly renewals add 24 hours / 7 days to the remaining qualification.
 Monthly cards retain the calendar-month rule: expiry is next month's first day
 at 00:00 Beijing time. Existing permanent accounts are not changed. Buying
 qualification does not recharge credit or override the monthly dispatch rules.
-Read and confirm the risk notice and complete embedded verification before
-buying. If payment creation is uncertain, use the retained order's query action
+Read and confirm the risk notice before buying. From 3.9.1 onward, the panel
+shop has no embedded Cloudflare verification widget. Other redemption pages
+retain their existing verification. If payment creation is uncertain, use the retained order's query action
 instead of creating another payment; unresolved payments retain their inventory
 until verified by the gateway or administrator.
 
