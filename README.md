@@ -57,6 +57,16 @@ When the backend economy flags are enabled, the panel also shows LDC credit
 top-up and rcredit redemption controls. Users who have reached the monthly
 received-help cap can continue helping and receive rcredit instead of ordinary
 credit; disabled economy features remain hidden.
+The 4.0.0 panel adds an **应急悬赏** switch. It is shown only as available when
+the backend reports a funded pool and actual backlog pressure; the panel then
+joins with `POST /api/join { bounty: true }` and requests `/api/next?bounty=1`.
+The mode has no music target and does not erase an already saved target. Accounts
+must be at least seven days old and not restricted or banned. A completed bounty
+shows the regular and bounty portions separately, while unused funding returns
+to the pool. The wallet displays bounty rcredit separately; non-Helpers can
+redeem that balance through the normal redemption flow at the same rate.
+Emergency availability, supply balancing and slot totals are backend-managed;
+the userscript has no local threshold or inventory controls.
 The backend also publishes one randomly selected community help day each month.
 On that date, a normal consumer account can start the local helper workflow and
 earn decayable credit without opening Helper; banned and restricted accounts
