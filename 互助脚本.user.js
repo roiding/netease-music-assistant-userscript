@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.1.0
-// @description  V4.1.0：月卡按剩余天数计价并支持保底顺延，活动卡仅在有库存时展示。
+// @version      4.1.1
+// @description  V4.1.1：修复会话校验、悬赏准入与月卡结算，兼容旧版购买；永久售价仍通过浏览器同步。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.1.0';
+    const CURRENT_VERSION = '4.1.1';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -2877,7 +2877,11 @@
                 || data.error === 'capacity_full'
                 || data.error === 'capacity_unavailable'
                 || data.error === 'user_rate_limited'
-                || data.error === 'global_rate_limited') {
+                || data.error === 'global_rate_limited'
+                || data.error === 'lease_busy'
+                || data.error === 'lease_conflict'
+                || data.error === 'lease_mode_conflict'
+                || data.error === 'lease_completed') {
                 const retryAfterSeconds = Math.max(15, Number(data.retryAfterSeconds || 30));
                 if (data.capacity) {
                     capacityState = data.capacity;
