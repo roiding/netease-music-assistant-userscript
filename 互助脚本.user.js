@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.0.0
-// @description  V4.0.0：新增自适应互助容量与应急悬赏，全月可接任务。
+// @version      4.1.0
+// @description  V4.1.0：月卡按剩余天数计价并支持保底顺延，活动卡仅在有库存时展示。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.0.0';
+    const CURRENT_VERSION = '4.1.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1972,12 +1972,18 @@
         document.getElementById('helper-permanent-pricing-note').innerText = result.pricing
             ? `今日基准价 ${result.pricing.baseMedianLdc} LDC。${result.pricing.profileNote}` : '永久资格需要同步 Linux.do 活跃度后计算售价。';
         document.getElementById('helper-permanent-sync').disabled = helperPricingBusy || openOrder || !result.pricingProbe;
-        helperShopMessage(gate.blocked ? (gate.reason || '当前暂停 LDC 购买') : '下单锁定一个名额；付款后自动开通。续购日卡/周卡可叠加剩余时间，月卡只到当月月底。');
-        document.getElementById('helper-shop-plans').innerHTML = result.plans.map((plan) => {
-            const disabled = !plan.enabled || plan.stock < 1 || gate.blocked || permanent || result.user.isHelperRestricted || openOrder || plan.requiresProfileSync;
+        helperShopMessage(gate.blocked ? (gate.reason || '当前暂停 LDC 购买') : '下单后自动开通；月卡按剩余天数计价，活动卡仅在库存开放时显示。');
+        document.getElementById('helper-shop-plans').innerHTML = result.plans.filter((plan) => {
+            return plan.enabled && (plan.inventoryMode !== 'limited' || Number(plan.stock || 0) > 0);
+        }).map((plan) => {
+            const disabled = gate.blocked || permanent || result.user.isHelperRestricted || openOrder || plan.requiresProfileSync;
+            const stockText = plan.inventoryMode === 'limited' ? `活动剩余 ${plan.stock} 个` : '不限量';
+            const monthlyText = plan.monthlyQuote
+                ? `剩余 ${plan.monthlyQuote.remainingDays}/${plan.monthlyQuote.totalDays} 天${plan.monthlyQuote.extendsIntoNextMonth ? `，保底顺延至 ${helperExpiryText({ helperExpiresAt: plan.monthlyQuote.expiresAt })}` : ''}`
+                : plan.durationText;
             return `<div class="helper-account-card"><div class="helper-account-head"><strong>${escapeHtml(plan.label)}</strong><span>${plan.requiresProfileSync ? '同步后显示售价' : `${escapeHtml(plan.priceLdc)} LDC`}</span></div>
-                <p>${escapeHtml(plan.durationText)}<br>${plan.enabled ? `剩余可售 ${plan.stock} 个` : '暂未上架'}</p>
-                <button class="helper-btn helper-btn-teal" type="button" data-helper-plan="${plan.id}" ${disabled ? 'disabled' : ''}>${permanent ? '已永久开通' : !plan.enabled ? '未上架' : plan.stock < 1 ? '已售罄' : openOrder ? '请先处理已有订单' : plan.requiresProfileSync ? '请先同步永久售价' : '购买'}</button></div>`;
+                <p>${escapeHtml(monthlyText)}<br>${escapeHtml(stockText)}</p>
+                <button class="helper-btn helper-btn-teal" type="button" data-helper-plan="${plan.id}" ${disabled ? 'disabled' : ''}>${permanent ? '已永久开通' : openOrder ? '请先处理已有订单' : plan.requiresProfileSync ? '请先同步永久售价' : '购买'}</button></div>`;
         }).join('');
         const labels = { pending: '待付款 / 待确认', paid: '已开通', expired: '已关闭并释放库存', failed: '失败', paid_review: '已付款，待管理员核对或退款', refunded: '已记录外部退款' };
         document.getElementById('helper-shop-orders').innerHTML = result.orders.map((order) => `<div class="helper-account-card">

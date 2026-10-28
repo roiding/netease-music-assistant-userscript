@@ -57,7 +57,12 @@ When the backend economy flags are enabled, the panel also shows LDC credit
 top-up and rcredit redemption controls. Users who have reached the monthly
 received-help cap can continue helping and receive rcredit instead of ordinary
 credit; disabled economy features remain hidden.
-The 4.0.0 panel adds an **应急悬赏** switch. It is shown only as available when
+The 4.1.0 shop turns the monthly card into the primary unlimited plan: the backend
+calculates its price from the remaining Beijing calendar days, and a floor-price
+purchase extends into the next month by its equivalent number of days. Permanent
+qualification remains unlimited and profile-priced. Daily and weekly cards remain
+activity-only limited-stock plans; they are hidden from the panel when stock is zero.
+The panel also includes the 4.0.0 **应急悬赏** switch. It is shown only as available when
 the backend reports a funded pool and actual backlog pressure; the panel then
 joins with `POST /api/join { bounty: true }` and requests `/api/next?bounty=1`.
 The mode has no music target and does not erase an already saved target. Accounts
