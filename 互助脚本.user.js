@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.1.1
-// @description  V4.1.1：修复会话校验、悬赏准入与月卡结算，兼容旧版购买；永久售价仍通过浏览器同步。
+// @version      4.2.0
+// @description  V4.2.0：充值与互助余额分账，可暂停使用充值点数；优先消耗互助点数，退款原路返还。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.1.1';
+    const CURRENT_VERSION = '4.2.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -86,6 +86,7 @@
     let helperPricingBusy = false;
     let helperPurchaseBusy = false;
     let currentJobBountyRcredits = 0;
+    let creditSpendingBusy = false;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
@@ -805,6 +806,8 @@
         if (code === 'targets_monthly_capped') return '当前可用目标都已达到本月被互助上限。';
         if (code === 'targets_temporarily_unavailable') return '当前没有可立即分配的互助任务。';
         if (code === 'credit_topup_disabled') return 'LDC 充值 credit 暂未开放。';
+        if (code === 'credit_spending_cooldown') return '充值余额开关切换过于频繁，请稍后再试。';
+        if (code === 'credit_source_migration') return '余额系统正在升级，暂不处理互助、充值或兑换，请稍后重试。';
         if (code === 'topup_target_required') return '消费用户充值前请先保存一首可用于互助的歌曲或专辑。';
         if (code === 'invalid_topup_amount') return '请输入有效的 LDC 充值金额。';
         if (code === 'invalid_topup_amount_precision') return 'LDC 充值金额最多支持两位小数。';
@@ -1572,6 +1575,10 @@
                             <div class="helper-section-heading"><strong>我的钱包</strong><span>LDC 与互助额度</span></div>
                             <div id="wallet-actions" style="display:none;">
                                 <div id="wallet-summary" class="helper-balance-grid"></div>
+                                <div id="wallet-credit-controls" class="helper-credit-controls" hidden>
+                                    <button id="credit-spending-toggle" class="helper-btn helper-btn-ghost" type="button" aria-pressed="false">暂停使用充值余额</button>
+                                    <p id="credit-spending-hint" class="helper-card-copy" role="status" aria-live="polite"></p>
+                                </div>
                                 <div class="helper-action-grid">
                                     <button id="credit-topup-btn" class="helper-btn helper-btn-blue" type="button" style="display:none;">LDC 充值</button>
                                     <button id="rcredit-redeem-btn" class="helper-btn helper-btn-purple" type="button" style="display:none;">兑换 LDC</button>
@@ -1786,11 +1793,15 @@
             .helper-btn-ghost { color: #555960; border: 1px solid var(--mh-line); background: #fff; }
             .helper-status-card { padding: 10px 11px; border: 1px solid #dbe8f7; border-radius: 11px; color: #27608e; background: #f4f9ff; white-space: pre-line; font-size: 11px; line-height: 1.55; }
             .helper-manual-btn { animation: mh-pulse 1.4s ease-in-out infinite; }
-            .helper-balance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
-            .helper-balance-card { padding: 12px; border: 1px solid var(--mh-line); border-radius: 12px; background: linear-gradient(145deg, #fff, #f8f8fa); }
+            .helper-balance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); gap: 8px; }
+            .helper-balance-card { min-width: 0; padding: 12px; border: 1px solid var(--mh-line); border-radius: 12px; background: linear-gradient(145deg, #fff, #f8f8fa); overflow-wrap: anywhere; }
+            .helper-balance-card-wide { grid-column: 1 / -1; }
             .helper-balance-card span { display: block; margin-bottom: 4px; color: var(--mh-muted); font-size: 10px; }
-            .helper-balance-card strong { display: block; font-size: 20px; line-height: 1.1; }
-            .helper-balance-card small { display: block; margin-top: 5px; color: #999ca2; font-size: 9px; }
+            .helper-balance-card strong { display: block; font-size: 20px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+            .helper-balance-card small { display: block; margin-top: 5px; color: #777b82; font-size: 10px; line-height: 1.5; }
+            .helper-wallet-total { grid-column: 1 / -1; margin: 0; color: var(--mh-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+            .helper-credit-controls { margin-top: 10px; }
+            .helper-credit-controls[hidden] { display: none; }
             .helper-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
             .helper-merchant-card, .helper-account-card { padding: 12px; border: 1px solid var(--mh-line); border-radius: 12px; background: #fafafd; }
             .helper-merchant-card { position: relative; }
@@ -1892,6 +1903,7 @@
             if (query) await queryHelperPurchase(query.dataset.helperQuery);
         };
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
+        document.getElementById('credit-spending-toggle').onclick = toggleCreditSpending;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
         document.getElementById('merchant-bind-btn').onclick = bindMerchantCredential;
         document.getElementById('helper-announcement-close-btn').onclick = hideAnnouncement;
@@ -2378,6 +2390,10 @@
         const state = participant || {};
         const credits = Number(state.credits || 0);
         const decayableCredits = Number(state.decayable_credits || 0);
+        const spendableCredits = Number(state.spendableCredits ?? credits);
+        const creditLine = typeof state.topupSpendingPaused === 'boolean'
+            ? `credit 总余额: ${credits}（互助 ${Number(state.earnedCredits || 0)} / 充值 ${Number(state.topupCredits || 0)}${state.topupSpendingPaused ? '，已暂停使用' : ''}${state.giftCredits ? ` / 赠送 ${Number(state.giftCredits)}` : ''}）`
+            : `credit: ${credits}${decayableCredits > 0 ? `（其中互助余额 ${decayableCredits}）` : ''}`;
         const rcredits = Number(state.rcredits || 0);
         const reservedRcredits = Number(state.reserved_rcredits || 0);
         const monthlyReceived = Number(state.monthly_received_help_count || 0);
@@ -2416,7 +2432,7 @@
         updateWalletControls(state);
         if (infoEl && !isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `剩余可被互助额度: ${credits}${decayableCredits > 0 ? `（其中助力余额 ${decayableCredits}）` : ''}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${communityHelpDayLine ? `\n${communityHelpDayLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `当前可被互助额度: ${spendableCredits}\n${creditLine}\nrcredit: ${rcredits} / 悬赏 rcredit: ${Number(state.bountyRcredits || 0)}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${communityHelpDayLine ? `\n${communityHelpDayLine}` : ''}${helperHoldLine ? `\n${helperHoldLine}` : ''}${helperDispatchPauseLine ? `\n${helperDispatchPauseLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -2434,7 +2450,7 @@
         const bountyRcredits = Number(participant && participant.bountyRcredits || 0);
         const canRedeemBounty = bountyRcredits > 0 && redemptionEnabled;
         const canRedeem = (isCurrentUserHelper() || canRedeemBounty) && redemptionEnabled;
-        actions.style.display = (topupEnabled || canRedeem || rcredits > 0 || bountyRcredits > 0) ? 'block' : 'none';
+        actions.style.display = (participant || topupEnabled || canRedeem || rcredits > 0 || bountyRcredits > 0) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
         redeemButton.style.display = canRedeem ? 'block' : 'none';
         redeemButton.disabled = canRedeem && !redemptionWindowOpen;
@@ -2445,11 +2461,60 @@
         const credits = Number(participant && participant.credits || 0);
         const decayableCredits = Number(participant && participant.decayable_credits || 0);
         const reserved = Number(participant && participant.reserved_rcredits || 0);
+        const hasSources = !!participant && typeof participant.topupSpendingPaused === 'boolean';
+        const paused = hasSources && participant.topupSpendingPaused;
+        const topupCredits = Number(participant && participant.topupCredits || 0);
+        const giftCredits = Number(participant && participant.giftCredits || 0);
+        const spendableCredits = Number(participant && participant.spendableCredits != null ? participant.spendableCredits : credits);
+        const amount = (value) => Number(value).toLocaleString('zh-CN');
+        const cardWidth = (value) => amount(value).length > 9 ? ' helper-balance-card-wide' : '';
         summary.innerHTML = `
-            <div class="helper-balance-card"><span>credit</span><strong>${credits}</strong><small>${decayableCredits > 0 ? `助力余额 ${decayableCredits}（每月衰减）` : '用于获得互助'}</small></div>
-            <div class="helper-balance-card"><span>rcredit</span><strong>${rcredits}</strong><small>${reserved > 0 ? `冻结 ${reserved}` : '可兑换 LDC'}</small></div>
-            <div class="helper-balance-card"><span>悬赏 rcredit</span><strong>${bountyRcredits}</strong><small>应急悬赏所得，可与 rcredit 合并兑换</small></div>
+            <div class="helper-balance-card${cardWidth(hasSources ? decayableCredits : credits)}"><span>${hasSources ? '互助 credit' : 'credit'}</span><strong>${amount(hasSources ? decayableCredits : credits)}</strong><small>${hasSources ? '优先使用，不可暂停；每月衰减' : '用于获得互助'}</small></div>
+            ${hasSources ? `<div class="helper-balance-card${cardWidth(topupCredits)}"><span>充值 credit</span><strong>${amount(topupCredits)}</strong><small>${paused ? '已暂停使用，余额保留' : '互助及赠送余额不足时使用'}</small></div>` : ''}
+            ${giftCredits > 0 ? `<div class="helper-balance-card${cardWidth(giftCredits)}"><span>赠送 credit</span><strong>${amount(giftCredits)}</strong><small>CDK / 活动空投，不可暂停</small></div>` : ''}
+            <div class="helper-balance-card${cardWidth(rcredits)}"><span>常规 rcredit</span><strong>${amount(rcredits)}</strong><small>按 Helper 资格兑换 LDC</small></div>
+            <div class="helper-balance-card${cardWidth(bountyRcredits)}"><span>悬赏 rcredit</span><strong>${amount(bountyRcredits)}</strong><small>无需购买 Helper 也可兑换 LDC</small></div>
+            <p class="helper-wallet-total">credit 总余额 ${amount(credits)} · 当前可用于互助 ${amount(spendableCredits)}${reserved > 0 ? `<br>兑换冻结 ${amount(reserved)} rcredit` : ''}</p>
         `;
+        const controls = document.getElementById('wallet-credit-controls');
+        const toggle = document.getElementById('credit-spending-toggle');
+        const hint = document.getElementById('credit-spending-hint');
+        if (controls) controls.hidden = !hasSources;
+        if (toggle) {
+            toggle.disabled = creditSpendingBusy || !hasSources;
+            toggle.innerText = creditSpendingBusy ? '正在保存…' : paused ? '恢复使用充值余额' : '暂停使用充值余额';
+            toggle.setAttribute('aria-pressed', String(paused));
+        }
+        if (hint) {
+            const active = Number(participant && participant.activeReceivedJobs || 0);
+            hint.innerText = `${paused ? '充值余额已保留；互助和赠送点数仍会用于被互助。' : '只暂停充值余额的使用，不停止本机助力，不影响 rcredit 兑换。'}${active > 0 ? ` 已派发 ${active} 个任务，仍按预占额度结算。` : ' 已预占的任务不受开关影响。'}`;
+        }
+    }
+
+    async function toggleCreditSpending() {
+        if (creditSpendingBusy || !currentParticipantState || typeof currentParticipantState.topupSpendingPaused !== 'boolean') return;
+        const paused = !currentParticipantState.topupSpendingPaused;
+        if (!window.confirm(paused
+            ? '暂停后，新任务不再使用充值余额；互助和赠送点数仍会被消费。已经预占的任务继续结算，本机助力不停止。确认暂停？'
+            : '恢复后，互助和赠送余额不足时会继续使用充值余额。确认恢复？')) return;
+        creditSpendingBusy = true;
+        updateWalletControls(currentParticipantState);
+        let message = '';
+        try {
+            const result = await callAPI('POST', '/wallet/credit-spending', { paused });
+            if (result && result.participant) updateParticipantInfo(result.participant);
+            if (!result || !result.ok) {
+                message = getPayloadErrorText(result, '充值余额设置未保存，请重试。');
+                if (result && result.retryAfterSeconds) message += ` 请在 ${result.retryAfterSeconds} 秒后重试。`;
+            }
+        } catch {
+            message = '充值余额设置未确认，请刷新账户状态后重试。';
+        } finally {
+            creditSpendingBusy = false;
+            updateWalletControls(currentParticipantState);
+            const hint = document.getElementById('credit-spending-hint');
+            if (message && hint) hint.innerText = message;
+        }
     }
 
     function updateMerchantCredentialControls() {
@@ -2538,7 +2603,7 @@
         const bonusText = quote.bonusCreditAmount > 0
             ? `（基础 ${quote.baseCreditAmount} + 赠送 ${quote.bonusCreditAmount}，命中满 ${quote.tier.minAmountLdc} LDC 赠 ${quote.tier.bonusPercent}%）`
             : `（基础到账 ${quote.baseCreditAmount}，当前金额未命中赠送档位）`;
-        if (!window.confirm(`支付 ${amountLdc} LDC，预计到账 ${quote.creditAmount} credit ${bonusText}。继续吗？`)) return;
+        if (!window.confirm(`支付 ${amountLdc} LDC，预计到账 ${quote.creditAmount} credit ${bonusText}。本订单全部到账计入充值余额，可暂停使用。${currentParticipantState && currentParticipantState.topupSpendingPaused ? '当前已暂停，新充值也会保留。' : ''}继续吗？`)) return;
         const result = await callAPI('POST', '/wallet/topups', { amountLdc: String(amountLdc) });
         if (!result || isApiErrorPayload(result)) {
             return alert(getPayloadErrorText(result, 'payment_create_failed'));
@@ -2677,7 +2742,7 @@
             }
             notifyShortTrackPenalty(joined.musicMeta || null);
             if (infoEl) {
-                const credits = Number(joined.participant && joined.participant.credits || 0);
+                const credits = Number(joined.participant && (joined.participant.spendableCredits ?? joined.participant.credits) || 0);
                 infoEl.innerText = `互助目标已保存。当前可被互助额度：${credits}。\n消费用户不会接收助力任务，也不会赚取 credit/rcredit。`;
             }
         } finally {
