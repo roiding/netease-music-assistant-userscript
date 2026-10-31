@@ -54,21 +54,22 @@ credits by that song's duration. Older records without metadata still fall back
 to the userscript-side album parsing logic.
 
 When the backend economy flags are enabled, the panel also shows LDC credit
-top-up and rcredit redemption controls. Users who have reached the monthly
-received-help cap can continue helping and receive rcredit instead of ordinary
-credit; disabled economy features remain hidden.
+top-up and rcredit redemption controls. rcredit is one balance: bounty jobs pay
+`min(2 x credit reward, 30)` rcredit from the emergency pool, Helpers also earn
+the owner's credit 1:1, and any signed-in user may redeem rcredit. Disabled
+economy features remain hidden.
 The 4.1.0 shop turns the monthly card into the primary unlimited plan: the backend
 calculates its price from the remaining Beijing calendar days, and a floor-price
 purchase extends into the next month by its equivalent number of days. Permanent
 qualification remains unlimited and profile-priced. Daily and weekly cards remain
 activity-only limited-stock plans; they are hidden from the panel when stock is zero.
-The panel also includes the 4.0.0 **应急悬赏** switch. It is shown only as available when
+The panel includes the **应急悬赏** entry for non-Helpers only. It is shown as available when
 the backend reports a funded pool and actual backlog pressure; the panel then
 joins with `POST /api/join { bounty: true }` and requests `/api/next?bounty=1`.
 The mode has no music target and does not erase an already saved target. Accounts
 must be at least seven days old and not restricted or banned. A completed bounty
 shows the regular and bounty portions separately, while unused funding returns
-to the pool. The wallet displays bounty rcredit separately; non-Helpers can
+to the pool. The wallet displays a single merged rcredit balance; non-Helpers can
 redeem that balance through the normal redemption flow at the same rate.
 Emergency availability, supply balancing and slot totals are backend-managed;
 the userscript has no local threshold or inventory controls.

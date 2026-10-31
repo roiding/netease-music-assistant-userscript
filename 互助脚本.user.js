@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.6.0
+// @version      4.7.0
 // @description  V4.2.0：充值与互助余额分账，可暂停使用充值点数；优先消耗互助点数，退款原路返还。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.6.0';
+    const CURRENT_VERSION = '4.7.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -86,6 +86,7 @@
     let helperPricingBusy = false;
     let helperPurchaseBusy = false;
     let currentJobBountyRcredits = 0;
+    let forcedBountyMode = null;
     let creditSpendingBusy = false;
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
@@ -2439,7 +2440,7 @@
         updateWalletControls(state);
         if (infoEl && !isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `当前可被互助额度: ${spendableCredits}\n${creditLine}\nrcredit: ${rcredits + Number(state.bountyRcredits || 0)}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${communityHelpDayLine ? `\n${communityHelpDayLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `当前可被互助额度: ${spendableCredits}\n${creditLine}\nrcredit: ${rcredits}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${communityHelpDayLine ? `\n${communityHelpDayLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -2454,8 +2455,7 @@
         const redemptionWindow = economyState && economyState.redemption && economyState.redemption.submissionWindow;
         const redemptionWindowOpen = !redemptionWindow || redemptionWindow.open !== false;
         const rcredits = Number(participant && participant.rcredits || 0);
-        const bountyRcredits = Number(participant && participant.bountyRcredits || 0);
-        const canRedeem = redemptionEnabled && (rcredits + bountyRcredits) > 0;
+        const canRedeem = redemptionEnabled && rcredits > 0;
         actions.style.display = (participant || topupEnabled || canRedeem) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
         redeemButton.style.display = canRedeem ? 'block' : 'none';
@@ -2478,7 +2478,7 @@
             <div class="helper-balance-card${cardWidth(hasSources ? decayableCredits : credits)}"><span>${hasSources ? '互助 credit' : 'credit'}</span><strong>${amount(hasSources ? decayableCredits : credits)}</strong><small>${hasSources ? '优先使用，不可暂停；每月衰减' : '用于获得互助'}</small></div>
             ${hasSources ? `<div class="helper-balance-card${cardWidth(topupCredits)}"><span>充值 credit</span><strong>${amount(topupCredits)}</strong><small>${paused ? '已暂停使用，余额保留' : '互助及赠送余额不足时使用'}</small></div>` : ''}
             ${giftCredits > 0 ? `<div class="helper-balance-card${cardWidth(giftCredits)}"><span>赠送 credit</span><strong>${amount(giftCredits)}</strong><small>CDK / 活动空投，不可暂停</small></div>` : ''}
-            <div class="helper-balance-card${cardWidth(rcredits + bountyRcredits)}"><span>rcredit</span><strong>${amount(rcredits + bountyRcredits)}</strong><small>悬赏与奖励积分，可兑换 LDC</small></div>
+            <div class="helper-balance-card${cardWidth(rcredits)}"><span>rcredit</span><strong>${amount(rcredits)}</strong><small>悬赏与奖励积分，可兑换 LDC</small></div>
             <p class="helper-wallet-total">credit 总余额 ${amount(credits)} · 当前可用于互助 ${amount(spendableCredits)}${reserved > 0 ? `<br>兑换冻结 ${amount(reserved)} rcredit` : ''}</p>
         `;
         const controls = document.getElementById('wallet-credit-controls');
@@ -2528,7 +2528,7 @@
         const form = document.getElementById('merchant-credential-form');
         if (!section || !summary || !form) return;
         const walletParticipant = currentParticipantState || {};
-        const visible = (isCurrentUserHelper() || Number(walletParticipant.rcredits || 0) + Number(walletParticipant.bountyRcredits || 0) > 0)
+        const visible = (isCurrentUserHelper() || Number(walletParticipant.rcredits || 0) > 0)
             && !!(economyState && economyState.redemption && economyState.redemption.enabled);
         section.style.display = visible ? 'block' : 'none';
         if (!visible) return;
@@ -2629,7 +2629,7 @@
             return alert(getErrorText('merchant_credential_required'));
         }
         const rcredits = window.prompt(
-            `输入兑换数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC\n当前可用 rcredit：${Number(currentParticipantState && currentParticipantState.rcredits || 0) + Number(currentParticipantState && currentParticipantState.bountyRcredits || 0)}`,
+            `输入兑换数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC\n当前可用 rcredit：${Number(currentParticipantState && currentParticipantState.rcredits || 0)}`,
             String(config.minRcredits || ''),
         );
         if (rcredits === null) return;
@@ -2697,6 +2697,7 @@
         if (readPendingPlayJob()) void cancelStoredPendingJob();
         isHelperRunning = false;
         activeJoinState = null;
+        forcedBountyMode = null;
         clearPlaybackMonitor();
         resetNoTaskRetryState();
         const toggleButton = document.getElementById('toggle-helper');
@@ -2914,7 +2915,7 @@
             const bountyMode = volunteerMode
                 ? false
                 : isCurrentUserHelper()
-                    ? helperWantsBountyNow()
+                    ? (forcedBountyMode === null ? helperWantsBountyNow() : forcedBountyMode)
                     : !!(activeJoinState && activeJoinState.bounty);
             data = await callAPI('GET', nextJobPath(volunteerMode, bountyMode));
         } finally {
@@ -2945,6 +2946,17 @@
                 if (data.capacity) {
                     capacityState = data.capacity;
                     updateVolunteerModeUI();
+                }
+                if (data.error === 'lease_mode_conflict'
+                    && isCurrentUserHelper()
+                    && (data.activeJobMode === 'bounty' || data.activeJobMode === 'normal')) {
+                    const nextMode = data.activeJobMode === 'bounty';
+                    if (forcedBountyMode !== nextMode) {
+                        forcedBountyMode = nextMode;
+                        infoEl.innerText = '正在恢复进行中的任务…';
+                        void playNext();
+                        return;
+                    }
                 }
                 if (data.error === 'bounty_unavailable' && isCurrentUserHelper()) {
                     if (capacityState && capacityState.bounty) capacityState.bounty.enabled = false;
@@ -2987,6 +2999,7 @@
             }
             return;
         }
+        forcedBountyMode = null;
         if (data.participant) updateParticipantInfo(data.participant);
 
         if (data.musicId) {
@@ -3002,7 +3015,7 @@
             currentJobBountyRcredits = bountyJob ? Number(data.bountyRcredits || 0) : 0;
             const rewardCredit = volunteerJob
                 ? 0
-                : Number(data.rewardCredit || creditCost);
+                : Number(data.creditReward ?? data.rewardCredit ?? creditCost);
             const bountyRcreditReward = bountyJob ? Number(data.bountyRcredits || 0) : 0;
             const rewardAmount = bountyJob
                 ? `${rewardCredit} credit + ${bountyRcreditReward} rcredit`
