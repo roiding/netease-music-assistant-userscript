@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.5.0
+// @version      4.6.0
 // @description  V4.2.0：充值与互助余额分账，可暂停使用充值点数；优先消耗互助点数，退款原路返还。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.5.0';
+    const CURRENT_VERSION = '4.6.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -789,7 +789,6 @@
         if (code === 'service_paused') return '北京时间每日 0:00-8:00 暂停互助，请 8:00 后再试。';
         if (code === 'service_d1_blocked') return 'D1 额度已触发保护阈值，服务已临时自动断流，请北京时间 8:00 后再试。';
         if (code === 'service_manual_blocked') return '服务已被管理员临时暂停，请稍后再试。';
-        if (code === 'rcredit_daily_limit_reached') return '今天的 rcredit 额度已经用完，系统已暂停派单，明天自动恢复。';
         if (code === 'bounty_unavailable') return '当前没有可领取的应急悬赏，请稍后再试。';
         if (code === 'bounty_capacity_full') return '本轮应急悬赏名额已满，请稍后再试。';
         if (code === 'capacity_full') return '当前互助容量已满，系统正在保护数据库，请稍后重试。';
@@ -1151,12 +1150,22 @@
         const targetHint = document.getElementById('helper-target-hint');
         if (checkbox) checkbox.checked = enabled;
         if (bountyCheckbox) bountyCheckbox.checked = isBountyModeEnabled();
-        // Bounty is the paid path for accounts without Helper access, and only
-        // exists while the backend reports the pool actually open.
-        const bountyVisible = !isCurrentUserHelper()
-            && (!capacityState || capacityState.bounty?.enabled === true);
+        // Bounty is the paid path for accounts without Helper access; Helpers
+        // switch automatically and never see the option. For everyone else the
+        // row stays visible with a status hint, and the checkbox only exists
+        // while the backend reports the pool actually open.
+        const bountyVisible = !isCurrentUserHelper();
         if (bountyOption) bountyOption.hidden = !bountyVisible;
-        if (!bountyVisible && isBountyModeEnabled()) {
+        const bountyOpen = !capacityState || capacityState.bounty?.enabled === true;
+        if (bountyCheckbox) {
+            bountyCheckbox.style.display = bountyOpen ? '' : 'none';
+            bountyCheckbox.disabled = !bountyOpen;
+        }
+        if (isCurrentUserHelper() && isBountyModeEnabled()) {
+            GM_setValue(BOUNTY_MODE_KEY, false);
+            if (bountyCheckbox) bountyCheckbox.checked = false;
+        }
+        if (!bountyOpen && isBountyModeEnabled()) {
             GM_setValue(BOUNTY_MODE_KEY, false);
             if (bountyCheckbox) bountyCheckbox.checked = false;
         }
@@ -1167,10 +1176,8 @@
             bountyHint.innerText = !capacityState
                 ? '等待互助的用户较多、系统有余量时开放；完成后获得可兑换 LDC 的悬赏 rcredit。'
                 : bounty.enabled
-                    ? `当前可接应急悬赏，完成后获得 ${bounty.minimumRewardRcredits || 5} rcredit 起（按任务冻结）。`
-                    : (bounty.paused
-                        ? '管理员已暂停应急悬赏。'
-                        : '当前互助供给充足、等待较少或暂无资金池，悬赏暂未开放。');
+                    ? '当前可接应急悬赏：悬赏部分按任务冻结发放 rcredit。'
+                    : '当前没有应急悬赏：等待较少、供给充足或资金池未开放。';
         }
         updatePrimaryAction();
     }
@@ -2411,21 +2418,14 @@
         const reservedRcredits = Number(state.reserved_rcredits || 0);
         const monthlyReceived = Number(state.monthly_received_help_count || 0);
         const monthlyLimit = Number(state.monthly_received_limit || 0);
-        const monthlyCompletedCreditUnits = Number(state.monthly_completed_credit_units || 0);
-        const rcreditContributionTarget = Number(state.rcredit_monthly_contribution_target || 0);
         const monthlyLine = monthlyLimit > 0
             ? `本月已收到: ${monthlyReceived} / ${monthlyLimit}${state.monthly_cap_reached ? '（已封顶）' : ''}`
             : '';
-        const rewardLine = state.rcredit_reward_active
-            ? 'rcredit 资格已解锁：达到每日限额后暂停派单，次日自动恢复'
-            : (state.monthly_cap_reached
-                ? `rcredit 解锁进度: 本月贡献 ${monthlyCompletedCreditUnits} / ${rcreditContributionTarget} credit`
-                : '');
         const communityHelpDay = economyState && economyState.communityHelpDay;
         const communityHelpDayActive = isCommunityHelpDayActive();
         const communityHelpDayLine = communityHelpDay && communityHelpDay.date
             ? (communityHelpDayActive
-                ? `今天是全民互助日：正常登录用户均可接任务，未达到 rcredit 资格时获得可衰减 credit`
+                ? `今天是全民互助日：正常登录用户均可接任务并获得可衰减 credit`
                 : `本月全民互助日：${communityHelpDay.date}`)
             : '';
         const consumerLine = currentUserState && !isCurrentUserHelper()
@@ -2439,7 +2439,7 @@
         updateWalletControls(state);
         if (infoEl && !isHelperRunning) {
             infoEl.style.display = 'block';
-            infoEl.innerText = `当前可被互助额度: ${spendableCredits}\n${creditLine}\nrcredit: ${rcredits} / 悬赏 rcredit: ${Number(state.bountyRcredits || 0)}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${rewardLine ? `\n${rewardLine}` : ''}${communityHelpDayLine ? `\n${communityHelpDayLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
+            infoEl.innerText = `当前可被互助额度: ${spendableCredits}\n${creditLine}\nrcredit: ${rcredits + Number(state.bountyRcredits || 0)}${reservedRcredits > 0 ? `（兑换冻结 ${reservedRcredits}）` : ''}${monthlyLine ? `\n${monthlyLine}` : ''}${communityHelpDayLine ? `\n${communityHelpDayLine}` : ''}${consumerLine ? `\n${consumerLine}` : ''}${noticeText ? `\n${noticeText}` : ''}`;
         }
     }
 
@@ -2455,9 +2455,8 @@
         const redemptionWindowOpen = !redemptionWindow || redemptionWindow.open !== false;
         const rcredits = Number(participant && participant.rcredits || 0);
         const bountyRcredits = Number(participant && participant.bountyRcredits || 0);
-        const canRedeemBounty = bountyRcredits > 0 && redemptionEnabled;
-        const canRedeem = (isCurrentUserHelper() || canRedeemBounty) && redemptionEnabled;
-        actions.style.display = (participant || topupEnabled || canRedeem || rcredits > 0 || bountyRcredits > 0) ? 'block' : 'none';
+        const canRedeem = redemptionEnabled && (rcredits + bountyRcredits) > 0;
+        actions.style.display = (participant || topupEnabled || canRedeem) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
         redeemButton.style.display = canRedeem ? 'block' : 'none';
         redeemButton.disabled = canRedeem && !redemptionWindowOpen;
@@ -2479,8 +2478,7 @@
             <div class="helper-balance-card${cardWidth(hasSources ? decayableCredits : credits)}"><span>${hasSources ? '互助 credit' : 'credit'}</span><strong>${amount(hasSources ? decayableCredits : credits)}</strong><small>${hasSources ? '优先使用，不可暂停；每月衰减' : '用于获得互助'}</small></div>
             ${hasSources ? `<div class="helper-balance-card${cardWidth(topupCredits)}"><span>充值 credit</span><strong>${amount(topupCredits)}</strong><small>${paused ? '已暂停使用，余额保留' : '互助及赠送余额不足时使用'}</small></div>` : ''}
             ${giftCredits > 0 ? `<div class="helper-balance-card${cardWidth(giftCredits)}"><span>赠送 credit</span><strong>${amount(giftCredits)}</strong><small>CDK / 活动空投，不可暂停</small></div>` : ''}
-            <div class="helper-balance-card${cardWidth(rcredits)}"><span>常规 rcredit</span><strong>${amount(rcredits)}</strong><small>按 Helper 资格兑换 LDC</small></div>
-            <div class="helper-balance-card${cardWidth(bountyRcredits)}"><span>悬赏 rcredit</span><strong>${amount(bountyRcredits)}</strong><small>无需购买 Helper 也可兑换 LDC</small></div>
+            <div class="helper-balance-card${cardWidth(rcredits + bountyRcredits)}"><span>rcredit</span><strong>${amount(rcredits + bountyRcredits)}</strong><small>悬赏与奖励积分，可兑换 LDC</small></div>
             <p class="helper-wallet-total">credit 总余额 ${amount(credits)} · 当前可用于互助 ${amount(spendableCredits)}${reserved > 0 ? `<br>兑换冻结 ${amount(reserved)} rcredit` : ''}</p>
         `;
         const controls = document.getElementById('wallet-credit-controls');
@@ -2530,7 +2528,7 @@
         const form = document.getElementById('merchant-credential-form');
         if (!section || !summary || !form) return;
         const walletParticipant = currentParticipantState || {};
-        const visible = (isCurrentUserHelper() || Number(walletParticipant.bountyRcredits || 0) > 0)
+        const visible = (isCurrentUserHelper() || Number(walletParticipant.rcredits || 0) + Number(walletParticipant.bountyRcredits || 0) > 0)
             && !!(economyState && economyState.redemption && economyState.redemption.enabled);
         section.style.display = visible ? 'block' : 'none';
         if (!visible) return;
@@ -2631,7 +2629,7 @@
             return alert(getErrorText('merchant_credential_required'));
         }
         const rcredits = window.prompt(
-            `输入兑换数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC\n当前可用：常规 rcredit ${Number(currentParticipantState && currentParticipantState.rcredits || 0)}，悬赏 rcredit ${Number(currentParticipantState && currentParticipantState.bountyRcredits || 0)}`,
+            `输入兑换数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC\n当前可用 rcredit：${Number(currentParticipantState && currentParticipantState.rcredits || 0) + Number(currentParticipantState && currentParticipantState.bountyRcredits || 0)}`,
             String(config.minRcredits || ''),
         );
         if (rcredits === null) return;
@@ -2931,14 +2929,6 @@
         }
         if (isApiErrorPayload(data)) {
             if (data.participant) updateParticipantInfo(data.participant);
-            if (data.error === 'rcredit_daily_limit_reached') {
-                const retryAfterSeconds = Math.max(60, Number(data.retryAfterSeconds || 3600));
-                infoEl.innerText = `${getPayloadErrorText(data, 'rcredit_daily_limit_reached')}\n约 ${Math.ceil(retryAfterSeconds / 3600)} 小时后自动重试`;
-                setTimeout(() => {
-                    if (isHelperRunning) playNext();
-                }, retryAfterSeconds * 1000);
-                return;
-            }
             if (data.error === 'bounty_unavailable'
                 || data.error === 'bounty_capacity_full'
                 || data.error === 'bounty_account_too_new'
@@ -3012,16 +3002,11 @@
             currentJobBountyRcredits = bountyJob ? Number(data.bountyRcredits || 0) : 0;
             const rewardCredit = volunteerJob
                 ? 0
-                : Number(data.contributionCredit || data.rewardCredit || creditCost);
-            const earnsRcredit = !!(data.participant && data.participant.rcredit_reward_active);
-            const rcreditRate = Number(economyState && economyState.rewards && economyState.rewards.rcreditsPerCredit || 1);
-            const regularRewardAmount = earnsRcredit
-                ? Math.floor(rewardCredit * rcreditRate)
-                : (bountyJob ? 0 : rewardCredit);
+                : Number(data.rewardCredit || creditCost);
+            const bountyRcreditReward = bountyJob ? Number(data.bountyRcredits || 0) : 0;
             const rewardAmount = bountyJob
-                ? Math.max(Number(data.bountyRcredits || 0), regularRewardAmount)
-                : regularRewardAmount;
-            const rewardLabel = bountyJob || earnsRcredit ? 'rcredit' : 'credit';
+                ? `${rewardCredit} credit + ${bountyRcreditReward} rcredit`
+                : `${rewardCredit} credit`;
             const expectedDurationMs = Number(data.targetDurationMs || 0);
             try { const p = getSafePlayer(); if(p && p.stop) p.stop(); } catch(e) {}
             if (type === 'album') {
@@ -3098,11 +3083,10 @@
                 const result = await finishCurrentJob(jobId, playedMs, positionMs, durationMs);
                 if (result && result.participant) updateParticipantInfo(result.participant);
                 if (result && result.ok && result.status === 'completed' && currentJobBountyRcredits > 0) {
-                    const earned = Number(result.reward && result.reward.amount || 0);
-                    const regularEarned = Number(result.reward && result.reward.regularRcredits || 0);
-                    const bountyEarned = Number(result.reward && result.reward.bountyRcredits || 0);
+                    const creditEarned = Number(result.reward && result.reward.creditReward || 0);
+                    const bountyEarned = Number(result.reward && result.reward.rcreditReward || 0);
                     document.getElementById('helper-info').innerText =
-                        `应急悬赏已完成：本次到账 ${earned} rcredit（常规 ${regularEarned} + 悬赏 ${bountyEarned}）。悬赏额度 ${currentJobBountyRcredits}，未使用部分已退回资金池。`;
+                        `应急悬赏已完成：本次到账 ${creditEarned} credit + ${bountyEarned} rcredit（悬赏额度 ${currentJobBountyRcredits} 已全额发放）。`;
                 }
                 currentJobBountyRcredits = 0;
                 if (result && result.ok && (result.status === 'completed' || result.status === 'already_settled')) {
@@ -3270,7 +3254,7 @@
                     const speedWarning = playbackRateInvalid ? '\n检测到倍速播放，请恢复 1x 后继续' : '';
                     const displayDurationMs = expectedDurationMs > 0 ? expectedDurationMs : dur;
                     const displayListenedMs = displayDurationMs > 0 ? Math.min(localListenedMs, displayDurationMs) : localListenedMs;
-                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]${volunteerJob ? ' · 公益' : bountyJob ? ' · 应急悬赏' : ''}\n歌曲时长: ${formatTime(displayDurationMs)}\n当前进度: ${formatTime(cur)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n${volunteerJob ? '公益模式：本次不获得 credit 或 rcredit' : bountyJob ? `本次悬赏最高可得: ${rewardAmount} rcredit（按任务冻结）` : `本次完成可得: ${rewardAmount} ${rewardLabel}`}${speedWarning}`;
+                    infoEl.innerText = `正在互助 [${isAlbumSource ? '专辑随机单曲' : '单曲'}]${volunteerJob ? ' · 公益' : bountyJob ? ' · 应急悬赏' : ''}\n歌曲时长: ${formatTime(displayDurationMs)}\n当前进度: ${formatTime(cur)}\n有效播放: ${formatTime(displayListenedMs)} / ${formatTime(requiredListenMs)}\n${volunteerJob ? '公益模式：本次不获得 credit 或 rcredit' : bountyJob ? `本次悬赏可得: ${rewardAmount}（悬赏部分按任务冻结）` : `本次完成可得: ${rewardAmount}`}${speedWarning}`;
 
                     const enoughSongListen = displayListenedMs >= requiredListenMs;
                     const songFinished = (cur >= dur - 2000 || (state === 'stop' && cur > 0))
