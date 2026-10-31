@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.4.0
+// @version      4.5.0
 // @description  V4.2.0：充值与互助余额分账，可暂停使用充值点数；优先消耗互助点数，退款原路返还。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.4.0';
+    const CURRENT_VERSION = '4.5.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1128,6 +1128,11 @@
 
     function isBountyModeEnabled() {
         return GM_getValue(BOUNTY_MODE_KEY, false) === true;
+    }
+
+    function helperWantsBountyNow() {
+        return isCurrentUserHelper()
+            && !!(capacityState && capacityState.bounty && capacityState.bounty.enabled === true);
     }
 
     function toggleHelpModes(source) {
@@ -2905,12 +2910,25 @@
         nextRequestInFlight = true;
         let data;
         try {
-            data = await callAPI('GET', nextJobPath(!!(activeJoinState && activeJoinState.volunteer), !!(activeJoinState && activeJoinState.bounty)));
+            const volunteerMode = !!(activeJoinState && activeJoinState.volunteer);
+            // Helpers prefer the bounty queue while it is open and fall back to
+            // normal paid help the moment the pool closes, so idle help never stops.
+            const bountyMode = volunteerMode
+                ? false
+                : isCurrentUserHelper()
+                    ? helperWantsBountyNow()
+                    : !!(activeJoinState && activeJoinState.bounty);
+            data = await callAPI('GET', nextJobPath(volunteerMode, bountyMode));
         } finally {
             nextRequestInFlight = false;
         }
         if (!isHelperRunning) return;
         if(!data) { infoEl.innerText = '服务器连接失败'; return; }
+        if (data && typeof data.bountyOpen === 'boolean') {
+            if (!capacityState) capacityState = { bounty: { enabled: data.bountyOpen } };
+            else if (!capacityState.bounty) capacityState.bounty = { enabled: data.bountyOpen };
+            else capacityState.bounty.enabled = data.bountyOpen;
+        }
         if (isApiErrorPayload(data)) {
             if (data.participant) updateParticipantInfo(data.participant);
             if (data.error === 'rcredit_daily_limit_reached') {
@@ -2938,7 +2956,21 @@
                     capacityState = data.capacity;
                     updateVolunteerModeUI();
                 }
+                if (data.error === 'bounty_unavailable' && isCurrentUserHelper()) {
+                    if (capacityState && capacityState.bounty) capacityState.bounty.enabled = false;
+                    updateVolunteerModeUI();
+                    infoEl.innerText = '应急悬赏暂未开放，已自动切换普通互助，任务不断。';
+                    void playNext();
+                    return;
+                }
                 if (data.error === 'bounty_account_too_new') {
+                    if (isCurrentUserHelper()) {
+                        if (capacityState && capacityState.bounty) capacityState.bounty.enabled = false;
+                        updateVolunteerModeUI();
+                        infoEl.innerText = '账号注册未满 7 天，暂以普通互助继续。';
+                        void playNext();
+                        return;
+                    }
                     stopHelper();
                     infoEl.innerText = getPayloadErrorText(data, data.error);
                     return;
