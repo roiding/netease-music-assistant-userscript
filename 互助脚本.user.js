@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.3.0
+// @version      4.4.0
 // @description  V4.2.0：充值与互助余额分账，可暂停使用充值点数；优先消耗互助点数，退款原路返还。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.3.0';
+    const CURRENT_VERSION = '4.4.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1140,11 +1140,21 @@
         const enabled = isVolunteerModeEnabled();
         const checkbox = document.getElementById('volunteer-mode');
         const bountyCheckbox = document.getElementById('bounty-mode');
+        const bountyOption = document.getElementById('bounty-mode-option');
         const bountyHint = document.getElementById('bounty-mode-hint');
         const targetRow = document.getElementById('helper-target-row');
         const targetHint = document.getElementById('helper-target-hint');
         if (checkbox) checkbox.checked = enabled;
         if (bountyCheckbox) bountyCheckbox.checked = isBountyModeEnabled();
+        // Bounty is the paid path for accounts without Helper access, and only
+        // exists while the backend reports the pool actually open.
+        const bountyVisible = !isCurrentUserHelper()
+            && (!capacityState || capacityState.bounty?.enabled === true);
+        if (bountyOption) bountyOption.hidden = !bountyVisible;
+        if (!bountyVisible && isBountyModeEnabled()) {
+            GM_setValue(BOUNTY_MODE_KEY, false);
+            if (bountyCheckbox) bountyCheckbox.checked = false;
+        }
         if (targetRow) targetRow.hidden = enabled || isBountyModeEnabled();
         if (targetHint) targetHint.innerText = enabled || isBountyModeEnabled() ? '无需配置互助目标' : '歌曲或专辑 ID';
         if (bountyHint) {
@@ -1553,7 +1563,7 @@
                                 <input id="volunteer-mode" type="checkbox" ${GM_getValue(VOLUNTEER_MODE_KEY, false) === true ? 'checked' : ''}>
                                 <span><strong>公益互助</strong><small>只助力他人，不获得 credit 或 rcredit；无需设置目标，也不会删除已保存目标。</small></span>
                             </label>
-                            <label class="helper-volunteer-option helper-bounty-option">
+                            <label id="bounty-mode-option" class="helper-volunteer-option helper-bounty-option">
                                 <input id="bounty-mode" type="checkbox" ${GM_getValue(BOUNTY_MODE_KEY, false) === true ? 'checked' : ''}>
                                 <span><strong>应急悬赏</strong><small id="bounty-mode-hint">等待互助的用户较多、系统有余量时开放；完成后获得可兑换 LDC 的悬赏 rcredit。</small></span>
                             </label>
