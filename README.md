@@ -55,9 +55,10 @@ to the userscript-side album parsing logic.
 
 When the backend economy flags are enabled, the panel also shows LDC credit
 top-up and rcredit redemption controls. rcredit is one balance: bounty jobs pay
-`min(2 x credit reward, 30)` rcredit from the emergency pool, Helpers also earn
-the owner's credit 1:1, and any signed-in user may redeem rcredit. Disabled
-economy features remain hidden.
+`min(2 x credit reward, 30)` rcredit from the emergency pool, and Helpers also
+earn the owner's credit 1:1. Only active Helpers may convert credit to rcredit
+or withdraw rcredit; consumers and restricted Helpers see no wallet conversion
+or withdrawal controls. Disabled economy features remain hidden.
 The 4.1.0 shop turns the monthly card into the primary unlimited plan: the backend
 calculates its price from the remaining Beijing calendar days, and a floor-price
 purchase extends into the next month by its equivalent number of days. Permanent
@@ -69,8 +70,9 @@ joins with `POST /api/join { bounty: true }` and requests `/api/next?bounty=1`.
 The mode has no music target and does not erase an already saved target. Accounts
 must be at least seven days old and not restricted or banned. A completed bounty
 shows the regular and bounty portions separately, while unused funding returns
-to the pool. The wallet displays a single merged rcredit balance; non-Helpers can
-redeem that balance through the normal redemption flow at the same rate.
+to the pool. The wallet displays a single merged rcredit balance. Withdrawal is
+limited to active Helpers at the common rate; non-Helpers cannot redeem bounty
+rcredit.
 Emergency availability, supply balancing and slot totals are backend-managed;
 the userscript has no local threshold or inventory controls.
 The backend also publishes one randomly selected community help day each month.

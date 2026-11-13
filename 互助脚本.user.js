@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.8.0
-// @description  V4.8.0：credit 每月可 1:1 转 rcredit，rcredit 随时提现；取消每月 credit 衰减。
+// @version      4.8.1
+// @description  V4.8.1：Helper 每月可 1:1 转 credit 为 rcredit，rcredit 随时提现；取消每月衰减。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.8.0';
+    const CURRENT_VERSION = '4.8.1';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -781,6 +781,7 @@
         if (code === 'banned') return '当前账号已被管理员封禁，互助与登录态已失效。';
         if (code === 'registration_required') return '当前账号尚未完成注册，请先完成开通流程。';
         if (code === 'helper_registration_required') return '当前是消费用户；开通 Helper 后才能帮助他人并赚取 credit 或 rcredit。';
+        if (code === 'helper_required_for_wallet_action') return '只有有效 Helper 才能转换 credit 或提现 rcredit。';
         if (code === 'helper_access_restricted') return '当前账号处于受限 Helper 状态，可以充值和接受互助，但暂不能帮助他人或赚取奖励。';
         if (code === 'invalid_or_expired_token') return '登录态已失效，请重新登录。';
         if (code === 'token_session_conflict') return '当前账号已在其他设备重新登录，当前页面登录态已失效。';
@@ -2465,14 +2466,15 @@
         const redemptionEnabled = !!(economyState && economyState.redemption && economyState.redemption.enabled);
         const conversion = creditConversionState;
         const conversionUsed = !!(conversion && conversion.used);
+        const isHelper = isCurrentUserHelper();
         const maxConvertible = conversionUsed ? 0
             : Math.max(0, Number(conversion && conversion.maxConvertibleCredits || 0));
-        const canConvert = !!conversion && conversion.canConvert !== false && !conversionUsed && maxConvertible > 0;
+        const canConvert = isHelper && !!conversion && conversion.canConvert !== false && !conversionUsed && maxConvertible > 0;
         const rcredits = Number(participant && participant.rcredits || 0);
-        const canRedeem = redemptionEnabled && rcredits > 0;
-        actions.style.display = (participant || topupEnabled || canRedeem || conversion) ? 'block' : 'none';
+        const canRedeem = isHelper && redemptionEnabled && rcredits > 0;
+        actions.style.display = (participant || topupEnabled || canRedeem || (conversion && isHelper)) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
-        convertButton.style.display = conversion ? 'block' : 'none';
+        convertButton.style.display = conversion && isHelper ? 'block' : 'none';
         convertButton.disabled = creditConversionBusy || !canConvert;
         convertButton.innerText = conversionUsed ? '本月已转换' : creditConversionBusy ? '正在转换…' : 'credit 转 rcredit';
         convertButton.title = conversionUsed
@@ -2497,7 +2499,7 @@
             ${hasSources ? `<div class="helper-balance-card${cardWidth(topupCredits)}"><span>充值 credit</span><strong>${amount(topupCredits)}</strong><small>${paused ? '已暂停使用，余额保留' : '互助及赠送余额不足时使用'}</small></div>` : ''}
             ${giftCredits > 0 ? `<div class="helper-balance-card${cardWidth(giftCredits)}"><span>赠送 credit</span><strong>${amount(giftCredits)}</strong><small>CDK / 活动空投，不可暂停</small></div>` : ''}
             <div class="helper-balance-card${cardWidth(rcredits)}"><span>rcredit</span><strong>${amount(rcredits)}</strong><small>可随时申请提现为 LDC</small></div>
-            <p class="helper-wallet-total">credit 总余额 ${amount(credits)} · 当前可用于互助 ${amount(spendableCredits)}${conversion ? `<br>本月转换：${conversionUsed ? `已转换 ${amount(conversion.convertedCredits)} credit` : `最多 ${amount(maxConvertible)} credit（每月一次）`}` : ''}${reserved > 0 ? `<br>提现冻结 ${amount(reserved)} rcredit` : ''}</p>
+            <p class="helper-wallet-total">credit 总余额 ${amount(credits)} · 当前可用于互助 ${amount(spendableCredits)}${conversion && isHelper ? `<br>本月转换：${conversionUsed ? `已转换 ${amount(conversion.convertedCredits)} credit` : `最多 ${amount(maxConvertible)} credit（每月一次）`}` : ''}${reserved > 0 ? `<br>提现冻结 ${amount(reserved)} rcredit` : ''}${!isHelper && (rcredits > 0 || credits > 0) ? '<br>只有有效 Helper 才能转换 credit 或提现 rcredit。' : ''}</p>
         `;
         const controls = document.getElementById('wallet-credit-controls');
         const toggle = document.getElementById('credit-spending-toggle');
@@ -2514,7 +2516,9 @@
         }
         const conversionHint = document.getElementById('credit-conversion-hint');
         if (conversionHint) {
-            conversionHint.innerText = !conversion
+            conversionHint.innerText = !isHelper
+                ? '只有有效 Helper 才能转换 credit 或提现 rcredit；可先开通 Helper。'
+                : !conversion
                 ? ''
                 : conversionUsed
                     ? `本月已转换 ${amount(conversion.convertedCredits)} credit；下月恢复额度，转换后不可撤回。`
@@ -2556,7 +2560,7 @@
         const form = document.getElementById('merchant-credential-form');
         if (!section || !summary || !form) return;
         const walletParticipant = currentParticipantState || {};
-        const visible = (isCurrentUserHelper() || Number(walletParticipant.rcredits || 0) > 0)
+        const visible = isCurrentUserHelper()
             && !!(economyState && economyState.redemption && economyState.redemption.enabled);
         section.style.display = visible ? 'block' : 'none';
         if (!visible) return;
