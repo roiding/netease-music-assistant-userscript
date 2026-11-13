@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.7.0
-// @description  V4.2.0：充值与互助余额分账，可暂停使用充值点数；优先消耗互助点数，退款原路返还。
+// @version      4.8.0
+// @description  V4.8.0：credit 每月可 1:1 转 rcredit，rcredit 随时提现；取消每月 credit 衰减。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.7.0';
+    const CURRENT_VERSION = '4.8.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -76,6 +76,8 @@
     let currentUserState = null;
     let currentParticipantState = null;
     let currentMerchantCredential = null;
+    let creditConversionState = null;
+    let creditConversionBusy = false;
     let currentAnnouncementId = '';
     let announcementRequestPromise = null;
     let announcementCheckedAfterLogin = false;
@@ -810,13 +812,17 @@
         if (code === 'invalid_topup_amount') return '请输入有效的 LDC 充值金额。';
         if (code === 'invalid_topup_amount_precision') return 'LDC 充值金额最多支持两位小数。';
         if (code === 'topup_amount_out_of_range') return '充值金额不在当前允许范围内。';
-        if (code === 'rcredit_redemption_disabled') return 'rcredit 兑换 LDC 暂未开放。';
-        if (code === 'rcredit_redemption_window_closed') return 'rcredit 兑换申请仅在每月最后 7 天开放。';
+        if (code === 'rcredit_redemption_disabled') return 'rcredit 提现暂未开放。';
+        if (code === 'invalid_credit_conversion_amount') return '请输入有效的 credit 转换数量。';
+        if (code === 'invalid_idempotency_key') return '转换请求已失效，请刷新后重试。';
+        if (code === 'credit_conversion_already_used') return '本月已经转换过 credit，每月只能转换一次。';
+        if (code === 'credit_conversion_exceeds_half') return '转换数量不能超过当前可用 credit 的一半。';
+        if (code === 'credit_conversion_unavailable') return '当前可用 credit 不足，或余额刚刚发生变化，请刷新后重试。';
         if (code === 'redemption_amount_too_small') return '兑换的 rcredit 数量低于最低要求。';
         if (code === 'redemption_net_amount_too_small') return '扣除手续费后的 LDC 金额低于最低要求。';
         if (code === 'redemption_already_pending') return '你已有一笔待处理的兑换申请。';
         if (code === 'insufficient_rcredits') return '可用 rcredit 不足。';
-        if (code === 'merchant_credential_required') return '兑换前需要先绑定 Linux.do 收款应用。';
+        if (code === 'merchant_credential_required') return '提现前需要先绑定 Linux.do 收款应用。';
         if (code === 'merchant_credential_immutable') return '收款应用已经绑定，不能自行修改；如需重置请联系管理员。';
         if (code === 'merchant_client_id_already_bound') return '这个 Client ID 已被其他 Helper 绑定。';
         if (code === 'invalid_merchant_client_id') return 'Client ID 格式不正确。';
@@ -1175,7 +1181,7 @@
         if (bountyHint) {
             const bounty = capacityState && capacityState.bounty || {};
             bountyHint.innerText = !capacityState
-                ? '等待互助的用户较多、系统有余量时开放；完成后获得可兑换 LDC 的悬赏 rcredit。'
+                ? '等待互助的用户较多、系统有余量时开放；完成后获得可提现为 LDC 的悬赏 rcredit。'
                 : bounty.enabled
                     ? '当前可接应急悬赏：悬赏部分按任务冻结发放 rcredit。'
                     : '当前没有应急悬赏：等待较少、供给充足或资金池未开放。';
@@ -1578,7 +1584,7 @@
                             </label>
                             <label id="bounty-mode-option" class="helper-volunteer-option helper-bounty-option">
                                 <input id="bounty-mode" type="checkbox" ${GM_getValue(BOUNTY_MODE_KEY, false) === true ? 'checked' : ''}>
-                                <span><strong>应急悬赏</strong><small id="bounty-mode-hint">等待互助的用户较多、系统有余量时开放；完成后获得可兑换 LDC 的悬赏 rcredit。</small></span>
+                                <span><strong>应急悬赏</strong><small id="bounty-mode-hint">等待互助的用户较多、系统有余量时开放；完成后获得可提现为 LDC 的悬赏 rcredit。</small></span>
                             </label>
                             <div id="helper-target-row" class="helper-target-row">
                                 <select id="my-music-type" aria-label="目标类型">
@@ -1602,8 +1608,10 @@
                                 </div>
                                 <div class="helper-action-grid">
                                     <button id="credit-topup-btn" class="helper-btn helper-btn-blue" type="button" style="display:none;">LDC 充值</button>
-                                    <button id="rcredit-redeem-btn" class="helper-btn helper-btn-purple" type="button" style="display:none;">兑换 LDC</button>
+                                    <button id="credit-convert-btn" class="helper-btn helper-btn-teal" type="button" style="display:none;">credit 转 rcredit</button>
+                                    <button id="rcredit-redeem-btn" class="helper-btn helper-btn-purple" type="button" style="display:none;">提现 rcredit</button>
                                 </div>
+                                <p id="credit-conversion-hint" class="helper-card-copy" aria-live="polite"></p>
                             </div>
                             <div id="merchant-credential-section" class="helper-merchant-card" style="display:none;">
                                 <div class="helper-card-title">
@@ -1823,7 +1831,7 @@
             .helper-wallet-total { grid-column: 1 / -1; margin: 0; color: var(--mh-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
             .helper-credit-controls { margin-top: 10px; }
             .helper-credit-controls[hidden] { display: none; }
-            .helper-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+            .helper-action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr)); gap: 8px; margin-top: 8px; }
             .helper-merchant-card, .helper-account-card { padding: 12px; border: 1px solid var(--mh-line); border-radius: 12px; background: #fafafd; }
             .helper-merchant-card { position: relative; }
             .helper-card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
@@ -1924,6 +1932,7 @@
             if (query) await queryHelperPurchase(query.dataset.helperQuery);
         };
         document.getElementById('credit-topup-btn').onclick = startCreditTopup;
+        document.getElementById('credit-convert-btn').onclick = startCreditConversion;
         document.getElementById('credit-spending-toggle').onclick = toggleCreditSpending;
         document.getElementById('rcredit-redeem-btn').onclick = startRcreditRedemption;
         document.getElementById('merchant-bind-btn').onclick = bindMerchantCredential;
@@ -2317,6 +2326,7 @@
         if (d && d.user) {
             currentUserState = d.user;
             currentParticipantState = d.participant || null;
+            creditConversionState = d.creditConversion || null;
             const accountType = helperAccountType(d.user);
             document.getElementById('login-status').innerText = `已登录: ${d.user.displayName} · ${accountType}`;
             economyState = d.economy || null;
@@ -2426,7 +2436,7 @@
         const communityHelpDayActive = isCommunityHelpDayActive();
         const communityHelpDayLine = communityHelpDay && communityHelpDay.date
             ? (communityHelpDayActive
-                ? `今天是全民互助日：正常登录用户均可接任务并获得可衰减 credit`
+                ? `今天是全民互助日：正常登录用户均可接任务并获得 credit`
                 : `本月全民互助日：${communityHelpDay.date}`)
             : '';
         const consumerLine = currentUserState && !isCurrentUserHelper()
@@ -2448,24 +2458,32 @@
         const actions = document.getElementById('wallet-actions');
         const summary = document.getElementById('wallet-summary');
         const topupButton = document.getElementById('credit-topup-btn');
+        const convertButton = document.getElementById('credit-convert-btn');
         const redeemButton = document.getElementById('rcredit-redeem-btn');
-        if (!actions || !summary || !topupButton || !redeemButton) return;
+        if (!actions || !summary || !topupButton || !convertButton || !redeemButton) return;
         const topupEnabled = !!(economyState && economyState.topup && economyState.topup.enabled);
         const redemptionEnabled = !!(economyState && economyState.redemption && economyState.redemption.enabled);
-        const redemptionWindow = economyState && economyState.redemption && economyState.redemption.submissionWindow;
-        const redemptionWindowOpen = !redemptionWindow || redemptionWindow.open !== false;
+        const conversion = creditConversionState;
+        const conversionUsed = !!(conversion && conversion.used);
+        const maxConvertible = conversionUsed ? 0
+            : Math.max(0, Number(conversion && conversion.maxConvertibleCredits || 0));
+        const canConvert = !!conversion && conversion.canConvert !== false && !conversionUsed && maxConvertible > 0;
         const rcredits = Number(participant && participant.rcredits || 0);
         const canRedeem = redemptionEnabled && rcredits > 0;
-        actions.style.display = (participant || topupEnabled || canRedeem) ? 'block' : 'none';
+        actions.style.display = (participant || topupEnabled || canRedeem || conversion) ? 'block' : 'none';
         topupButton.style.display = topupEnabled ? 'block' : 'none';
+        convertButton.style.display = conversion ? 'block' : 'none';
+        convertButton.disabled = creditConversionBusy || !canConvert;
+        convertButton.innerText = conversionUsed ? '本月已转换' : creditConversionBusy ? '正在转换…' : 'credit 转 rcredit';
+        convertButton.title = conversionUsed
+            ? `本月已转换 ${Number(conversion && conversion.convertedCredits || 0)} credit，下月可再次转换`
+            : maxConvertible > 0 ? `本月最多可转换 ${maxConvertible} credit（当前可用的一半）` : '当前可用 credit 不足';
         redeemButton.style.display = canRedeem ? 'block' : 'none';
-        redeemButton.disabled = canRedeem && !redemptionWindowOpen;
-        redeemButton.innerText = redemptionWindowOpen ? '兑换 LDC' : '月底开放兑换';
-        redeemButton.title = redemptionWindowOpen || !redemptionWindow
-            ? ''
-            : `本月开放时间：${redemptionWindow.startDate} 至 ${redemptionWindow.endDate}`;
+        redeemButton.disabled = false;
+        redeemButton.innerText = '提现 rcredit';
+        redeemButton.title = '随时可提交提现申请';
         const credits = Number(participant && participant.credits || 0);
-        const decayableCredits = Number(participant && participant.decayable_credits || 0);
+        const earnedCredits = Number(participant && (participant.earnedCredits ?? participant.decayable_credits) || 0);
         const reserved = Number(participant && participant.reserved_rcredits || 0);
         const hasSources = !!participant && typeof participant.topupSpendingPaused === 'boolean';
         const paused = hasSources && participant.topupSpendingPaused;
@@ -2475,11 +2493,11 @@
         const amount = (value) => Number(value).toLocaleString('zh-CN');
         const cardWidth = (value) => amount(value).length > 9 ? ' helper-balance-card-wide' : '';
         summary.innerHTML = `
-            <div class="helper-balance-card${cardWidth(hasSources ? decayableCredits : credits)}"><span>${hasSources ? '互助 credit' : 'credit'}</span><strong>${amount(hasSources ? decayableCredits : credits)}</strong><small>${hasSources ? '优先使用，不可暂停；每月衰减' : '用于获得互助'}</small></div>
+            <div class="helper-balance-card${cardWidth(hasSources ? earnedCredits : credits)}"><span>${hasSources ? '互助 credit' : 'credit'}</span><strong>${amount(hasSources ? earnedCredits : credits)}</strong><small>${hasSources ? '优先使用，不可暂停；可转为 rcredit 提现' : '用于获得互助'}</small></div>
             ${hasSources ? `<div class="helper-balance-card${cardWidth(topupCredits)}"><span>充值 credit</span><strong>${amount(topupCredits)}</strong><small>${paused ? '已暂停使用，余额保留' : '互助及赠送余额不足时使用'}</small></div>` : ''}
             ${giftCredits > 0 ? `<div class="helper-balance-card${cardWidth(giftCredits)}"><span>赠送 credit</span><strong>${amount(giftCredits)}</strong><small>CDK / 活动空投，不可暂停</small></div>` : ''}
-            <div class="helper-balance-card${cardWidth(rcredits)}"><span>rcredit</span><strong>${amount(rcredits)}</strong><small>悬赏与奖励积分，可兑换 LDC</small></div>
-            <p class="helper-wallet-total">credit 总余额 ${amount(credits)} · 当前可用于互助 ${amount(spendableCredits)}${reserved > 0 ? `<br>兑换冻结 ${amount(reserved)} rcredit` : ''}</p>
+            <div class="helper-balance-card${cardWidth(rcredits)}"><span>rcredit</span><strong>${amount(rcredits)}</strong><small>可随时申请提现为 LDC</small></div>
+            <p class="helper-wallet-total">credit 总余额 ${amount(credits)} · 当前可用于互助 ${amount(spendableCredits)}${conversion ? `<br>本月转换：${conversionUsed ? `已转换 ${amount(conversion.convertedCredits)} credit` : `最多 ${amount(maxConvertible)} credit（每月一次）`}` : ''}${reserved > 0 ? `<br>提现冻结 ${amount(reserved)} rcredit` : ''}</p>
         `;
         const controls = document.getElementById('wallet-credit-controls');
         const toggle = document.getElementById('credit-spending-toggle');
@@ -2493,6 +2511,16 @@
         if (hint) {
             const active = Number(participant && participant.activeReceivedJobs || 0);
             hint.innerText = `${paused ? '充值余额已保留；互助和赠送点数仍会用于被互助。' : '只暂停充值余额的使用，不停止本机助力，不影响 rcredit 兑换。'}${active > 0 ? ` 已派发 ${active} 个任务，仍按预占额度结算。` : ' 已预占的任务不受开关影响。'}`;
+        }
+        const conversionHint = document.getElementById('credit-conversion-hint');
+        if (conversionHint) {
+            conversionHint.innerText = !conversion
+                ? ''
+                : conversionUsed
+                    ? `本月已转换 ${amount(conversion.convertedCredits)} credit；下月恢复额度，转换后不可撤回。`
+                    : maxConvertible > 0
+                        ? `本月可转换一次，最多 ${amount(maxConvertible)} credit（当前可用额度的一半），1:1 到账 rcredit。`
+                        : '当前可用 credit 不足 2，暂不能转换。';
         }
     }
 
@@ -2533,11 +2561,11 @@
         section.style.display = visible ? 'block' : 'none';
         if (!visible) return;
         if (currentMerchantCredential && currentMerchantCredential.bound) {
-            summary.innerText = 'Linux.do 收款应用已绑定，凭据已安全保存，兑换 LDC 时会自动使用。';
+            summary.innerText = 'Linux.do 收款应用已绑定，凭据已安全保存，提现 rcredit 时会自动使用。';
             summary.style.whiteSpace = 'normal';
             form.style.display = 'none';
         } else {
-            summary.innerText = '绑定用于接收兑换 LDC 的 Linux.do 收款应用';
+            summary.innerText = '绑定用于接收 rcredit 提现 LDC 的 Linux.do 收款应用';
             summary.style.whiteSpace = 'normal';
             form.style.display = 'flex';
         }
@@ -2550,7 +2578,7 @@
         const clientId = String(clientIdInput && clientIdInput.value || '').trim();
         const clientSecret = String(clientSecretInput && clientSecretInput.value || '').trim();
         if (!clientId || !clientSecret) return alert('请输入 Client ID 和 Client Secret。');
-        if (!window.confirm('绑定后不能自行修改。确认使用这个 Linux.do 应用接收兑换 LDC？')) return;
+        if (!window.confirm('绑定后不能自行修改。确认使用这个 Linux.do 应用接收 rcredit 提现 LDC？')) return;
         button.disabled = true;
         const result = await callAPI('POST', '/wallet/merchant-credential', { clientId, clientSecret });
         button.disabled = false;
@@ -2620,16 +2648,13 @@
     async function startRcreditRedemption() {
         const config = economyState && economyState.redemption;
         if (!config || !config.enabled) return alert(getErrorText('rcredit_redemption_disabled'));
-        if (config.submissionWindow && config.submissionWindow.open === false) {
-            return alert(`rcredit 兑换申请仅在每月最后 7 天开放。\n本月开放时间：${config.submissionWindow.startDate} 至 ${config.submissionWindow.endDate}`);
-        }
         if (!currentMerchantCredential || !currentMerchantCredential.bound) {
             activateHelperTab('wallet');
             updateMerchantCredentialControls();
             return alert(getErrorText('merchant_credential_required'));
         }
         const rcredits = window.prompt(
-            `输入兑换数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC\n当前可用 rcredit：${Number(currentParticipantState && currentParticipantState.rcredits || 0)}`,
+            `输入提现数量（最低 ${config.minRcredits} rcredit）\n当前比例：${config.rcreditsPerLdc} rcredit = 1 LDC\n当前可用 rcredit：${Number(currentParticipantState && currentParticipantState.rcredits || 0)}`,
             String(config.minRcredits || ''),
         );
         if (rcredits === null) return;
@@ -2638,13 +2663,67 @@
         const gross = amount / Number(config.rcreditsPerLdc || 1);
         const fee = gross * Number(config.feeBps || 0) / 10000 + Number(config.fixedFeeLdc || 0);
         const net = Math.floor(Math.max(0, gross - fee) * 100) / 100;
-        if (!window.confirm(`将冻结 ${amount} rcredit，预计实收 ${net.toFixed(2)} LDC。提交后由管理员创建付款订单并完成支付，确认提交吗？`)) return;
+        if (!window.confirm(`将冻结 ${amount} rcredit，预计实收 ${net.toFixed(2)} LDC。管理员会创建付款订单并完成支付。\n提现没有日期限制，但提交后 rcredit 会立即冻结，确认提现吗？`)) return;
         const result = await callAPI('POST', '/wallet/redemptions', { rcredits: amount });
         if (!result || isApiErrorPayload(result)) {
             return alert(getPayloadErrorText(result, 'rcredit_redemption_failed'));
         }
-        alert(`兑换申请已进入管理员付款队列，已冻结 ${result.redemption.rcreditAmount} rcredit，预计收款 ${result.redemption.netAmountLdc} LDC。`);
+        alert(`提现申请已进入管理员付款队列，已冻结 ${result.redemption.rcreditAmount} rcredit，预计收款 ${result.redemption.netAmountLdc} LDC。`);
         await refreshMe();
+    }
+
+    function newCreditConversionIdempotencyKey() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+        const bytes = new Uint8Array(16);
+        window.crypto.getRandomValues(bytes);
+        return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function startCreditConversion() {
+        const conversion = creditConversionState;
+        if (!conversion || conversion.used || creditConversionBusy) return;
+        const maxConvertible = Math.max(0, Number(conversion.maxConvertibleCredits || 0));
+        if (!maxConvertible) return alert(getErrorText('credit_conversion_unavailable'));
+        const input = window.prompt(
+            `输入转换数量（1 credit = 1 rcredit）\n本月上限：${maxConvertible} credit（当前可用 credit 的一半）\n每月只能转换一次，确认后不可撤销。`,
+            String(maxConvertible),
+        );
+        if (input === null) return;
+        const amount = Math.floor(Number(input));
+        if (!Number.isSafeInteger(amount) || amount <= 0) return alert(getErrorText('invalid_credit_conversion_amount'));
+        if (amount > maxConvertible) return alert(getErrorText('credit_conversion_exceeds_half'));
+        const confirmText = `将 ${amount} credit 按 1:1 转为 ${amount} rcredit，本月不能再转换。\n转换后会优先消耗互助、赠送、充值余额；已被任务预占的 credit 不会转换。\n确认转换吗？`;
+        if (!window.confirm(confirmText)) return;
+
+        creditConversionBusy = true;
+        updateWalletControls(currentParticipantState);
+        let message = '';
+        try {
+            const result = await callAPI('POST', '/wallet/credit-conversion', {
+                credits: amount,
+                idempotencyKey: newCreditConversionIdempotencyKey(),
+            });
+            if (result && result.ok && result.participant) {
+                creditConversionState = result.creditConversion || null;
+                updateParticipantInfo(result.participant);
+                await refreshMe();
+                alert(`已转换 ${result.conversion.creditAmount} credit，rcredit 余额已增加。可在钱包中随时申请提现。`);
+                return;
+            }
+            message = getPayloadErrorText(result, 'credit_conversion_unavailable');
+            if (result && result.creditConversion) {
+                creditConversionState = result.creditConversion;
+                updateWalletControls(currentParticipantState);
+            }
+        } catch {
+            message = '转换结果未确认，请刷新钱包后再操作，避免重复提交。';
+        } finally {
+            creditConversionBusy = false;
+            updateWalletControls(currentParticipantState);
+            if (message) alert(message);
+        }
     }
 
     async function refreshReturnedTopup(orderNo) {
