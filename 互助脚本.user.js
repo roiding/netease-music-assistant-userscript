@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.8.1
+// @version      4.9.0
 // @description  V4.8.1：Helper 每月可 1:1 转 credit 为 rcredit，rcredit 随时提现；取消每月衰减。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.8.1';
+    const CURRENT_VERSION = '4.9.0';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1646,6 +1646,13 @@
                                     <p id="helper-permanent-pricing-note" class="helper-card-copy"></p>
                                     <button id="helper-permanent-sync" class="helper-btn helper-btn-ghost" type="button">同步 Linux.do 活跃度 / 永久售价</button>
                                 </div>
+                                <div id="helper-installment" class="helper-account-card" hidden>
+                                    <strong>永久 Helper 分期付款</strong>
+                                    <p id="helper-installment-note" class="helper-card-copy"></p>
+                                    <label class="helper-card-copy" for="helper-installment-amount">首期支付金额（LDC，可输入 0.01 至售价）</label>
+                                    <input id="helper-installment-amount" type="number" min="0.01" step="0.01" inputmode="decimal">
+                                    <button id="helper-installment-buy" class="helper-btn helper-btn-teal" type="button">创建分期并支付首期</button>
+                                </div>
                                 <div id="helper-shop-plans"></div>
                                 <details class="helper-account-card"><summary>异常播放风险提示与使用承诺</summary>
                                     <p>互助或自动化播放可能被网易云识别为异常行为，导致播放无效、数据清除、限流、警告、账号封禁或音乐人权益受到影响。本项目为非官方、非商业性质，仅限本人及亲友间学习交流，不得用于刷量、榜单操纵、有偿服务或商业推广。</p>
@@ -1653,6 +1660,7 @@
                                 </details>
                                 <label class="helper-card-copy"><input id="helper-shop-consent" type="checkbox">我已阅读并理解风险，承诺仅限本人及亲友间学习交流，不用于刷量、商业推广或其他违规用途。</label>
                                 <div id="helper-shop-orders"></div>
+                                <div id="helper-installment-orders"></div>
                                 <a id="helper-cdk-link" target="_blank" rel="noopener noreferrer">已有 CDK？继续兑换</a>
                             </div>
                             <button id="logout-link" class="helper-btn helper-btn-ghost" type="button" style="display:${token ? 'block' : 'none'}">退出当前账户</button>
@@ -1924,9 +1932,18 @@
         document.getElementById('helper-register-btn').onclick = startHelperRegistration;
         document.getElementById('helper-shop-refresh').onclick = refreshHelperShop;
         document.getElementById('helper-permanent-sync').onclick = syncHelperPermanentPrice;
+        document.getElementById('helper-installment-buy').onclick = buyHelperInstallment;
         document.getElementById('helper-shop-plans').onclick = async (event) => {
             const button = event.target.closest('[data-helper-plan]');
-            if (button) await buyHelperPlan(button.dataset.helperPlan);
+            if (!button) return;
+            if (button.dataset.helperPlan === 'permanent') {
+                const box = document.getElementById('helper-installment');
+                box.hidden = false;
+                box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                document.getElementById('helper-installment-amount').focus();
+                return;
+            }
+            await buyHelperPlan(button.dataset.helperPlan);
         };
         document.getElementById('helper-shop-orders').onclick = async (event) => {
             const query = event.target.closest('[data-helper-query]');
@@ -2024,6 +2041,11 @@
             const monthlyText = plan.monthlyQuote
                 ? `剩余 ${plan.monthlyQuote.remainingDays}/${plan.monthlyQuote.totalDays} 天${plan.monthlyQuote.extendsIntoNextMonth ? `，保底顺延至 ${helperExpiryText({ helperExpiresAt: plan.monthlyQuote.expiresAt })}` : ''}`
                 : plan.durationText;
+            if (plan.id === 'permanent') {
+                return `<div class="helper-account-card"><div class="helper-account-head"><strong>${escapeHtml(plan.label)}</strong><span>${plan.requiresProfileSync ? '同步后显示售价' : `${escapeHtml(plan.priceLdc)} LDC`}</span></div>
+                    <p>${escapeHtml(plan.durationText)}<br>支持分期：先付首期，余款按剩余金额逐次补付；未付清期间按已付比例获得限时资格。</p>
+                    <button class="helper-btn helper-btn-teal" type="button" data-helper-plan="${plan.id}" ${disabled ? 'disabled' : ''}>${permanent ? '已永久开通' : openOrder ? '请先处理已有订单' : plan.requiresProfileSync ? '请先同步永久售价' : '选择首期金额'}</button></div>`;
+            }
             return `<div class="helper-account-card"><div class="helper-account-head"><strong>${escapeHtml(plan.label)}</strong><span>${plan.requiresProfileSync ? '同步后显示售价' : `${escapeHtml(plan.priceLdc)} LDC`}</span></div>
                 <p>${escapeHtml(monthlyText)}<br>${escapeHtml(stockText)}</p>
                 <button class="helper-btn helper-btn-teal" type="button" data-helper-plan="${plan.id}" ${disabled ? 'disabled' : ''}>${permanent ? '已永久开通' : openOrder ? '请先处理已有订单' : plan.requiresProfileSync ? '请先同步永久售价' : '购买'}</button></div>`;
@@ -2032,8 +2054,88 @@
         document.getElementById('helper-shop-orders').innerHTML = result.orders.map((order) => `<div class="helper-account-card">
             <strong>${escapeHtml(order.label)} · ${escapeHtml(order.amountLdc)} LDC</strong><p>${labels[order.status] || escapeHtml(order.status)}<br>${escapeHtml(order.orderNo)}${order.status === 'paid' ? `<br>${order.helperExpiresAt ? escapeHtml(helperExpiryText({ helperExpiresAt: order.helperExpiresAt })) : '永久有效'}` : ''}</p>
             ${order.status === 'pending' ? `${order.paymentUrl ? `<a class="helper-btn helper-btn-teal" href="${escapeHtml(order.paymentUrl)}">继续付款</a>` : ''}<button type="button" class="helper-btn helper-btn-ghost" data-helper-query="${escapeHtml(order.orderNo)}">查询付款结果</button>` : ''}</div>`).join('');
+        renderHelperInstallment(result);
         const link = document.getElementById('helper-cdk-link');
         link.href = (authConfig && authConfig.cdkRegisterUrl) || `${SERVICE_ORIGINS[0]}/register-cdk`;
+    }
+
+    function renderHelperInstallment(result) {
+        const contract = result.installment;
+        const box = document.getElementById('helper-installment');
+        const orders = document.getElementById('helper-installment-orders');
+        const amount = document.getElementById('helper-installment-amount');
+        const buy = document.getElementById('helper-installment-buy');
+        const permanent = result.user.isRegistered && !result.user.helperExpiresAt;
+        if (contract && contract.status === 'active') {
+            box.hidden = false;
+            document.getElementById('helper-installment-note').innerText =
+                `已付 ${contract.paidLdc} / ${contract.totalLdc} LDC，剩余 ${contract.remainingLdc} LDC。` +
+                `当前有效至 ${contract.entitlementExpiresAt ? helperExpiryText({ helperExpiresAt: contract.entitlementExpiresAt }) : '待首期到账'}。` +
+                ' 全部付清后转为永久资格。';
+            amount.hidden = true;
+            buy.innerText = `支付下一期 ${contract.nextAmountLdc} LDC`;
+            orders.innerHTML = result.orders.filter((order) => order.installmentPlanId === contract.id).map((order) => `<div class="helper-account-card">
+                <strong>分期付款 · ${escapeHtml(order.amountLdc)} LDC</strong><p>${escapeHtml(labelsForHelperOrder(order.status))}<br>${escapeHtml(order.orderNo)}</p>
+                ${order.status === 'pending' ? `${order.paymentUrl ? `<a class="helper-btn helper-btn-teal" href="${escapeHtml(order.paymentUrl)}">继续付款</a>` : ''}<button type="button" class="helper-btn helper-btn-ghost" data-helper-query="${escapeHtml(order.orderNo)}">查询付款结果</button>` : ''}</div>`).join('');
+            return;
+        }
+        orders.innerHTML = '';
+        const permanentPlan = result.plans.find((plan) => plan.id === 'permanent');
+        const openOrder = result.orders.some((order) => ['pending', 'paid_review'].includes(order.status));
+        box.hidden = permanent || result.user.isHelperRestricted || !permanentPlan || !permanentPlan.enabled || permanentPlan.requiresProfileSync;
+        amount.hidden = false;
+        document.getElementById('helper-installment-note').innerText = permanentPlan && permanentPlan.priceLdc
+            ? `永久 Helper 售价 ${permanentPlan.priceLdc} LDC。可先支付首期，后续按剩余金额补款；每次到账后按平台月卡价格折算有效期。`
+            : '暂无可用永久 Helper 售价。';
+        if (amount && !amount.value && permanentPlan && permanentPlan.priceLdc) {
+            amount.max = permanentPlan.priceLdc;
+            amount.placeholder = `最高 ${permanentPlan.priceLdc}`;
+        }
+        buy.innerText = '创建分期并支付首期';
+        buy.disabled = openOrder || !permanentPlan || permanentPlan.requiresProfileSync;
+    }
+
+    function labelsForHelperOrder(status) {
+        return { pending: '待付款 / 待确认', paid: '已到账', expired: '已关闭并释放', failed: '失败',
+            paid_review: '已付款，待管理员核对', refunded: '已记录外部退款' }[status] || status;
+    }
+
+    async function buyHelperInstallment() {
+        if (helperPurchaseBusy || !helperShopState) return;
+        const plan = helperShopState.plans.find((item) => item.id === 'permanent');
+        if (!plan) return;
+        if (plan.requiresProfileSync) return helperShopMessage('请先同步 Linux.do 活跃度，计算永久售价。');
+        if (!document.getElementById('helper-shop-consent').checked) return helperShopMessage('请先阅读并勾选风险提示和使用承诺。');
+        const contract = helperShopState.installment;
+        const active = contract && contract.status === 'active';
+        const raw = active ? contract.nextAmountLdc : document.getElementById('helper-installment-amount').value;
+        const amount = Number(raw);
+        const confirmText = active
+            ? `支付分期余款 ${raw} LDC？到账后按已付比例更新 Helper 有效期。`
+            : `创建永久 Helper 分期，首期支付 ${raw} LDC？后续每期金额为剩余应付，全部付清后才转为永久资格。`;
+        if (!window.confirm(confirmText)) return;
+        helperPurchaseBusy = true;
+        try {
+            helperShopMessage('正在创建分期付款订单...');
+            const result = await callAPI('POST', '/helper/orders', {
+                planId: 'permanent',
+                expectedPriceLdc: active ? contract.nextAmountLdc : String(amount),
+                installment: true,
+                ...(active ? {} : { installmentAmountLdc: String(amount) }),
+                ...(!active && helperPricingState ? helperPricingState : {}),
+                riskAcknowledged: true,
+                riskNoticeVersion: helperShopState.riskNoticeVersion,
+            });
+            if (result && result.paymentUrl && result.order && result.order.status === 'pending') {
+                stopHelper();
+                window.location.href = result.paymentUrl;
+                return;
+            }
+            await refreshHelperShop();
+            helperShopMessage(result && result.error ? getPayloadErrorText(result, '分期创建失败') : '分期订单已保留，请查询付款结果。');
+        } finally {
+            helperPurchaseBusy = false;
+        }
     }
 
     function syncHelperPermanentPrice() {
@@ -2095,6 +2197,7 @@
 
     async function buyHelperPlan(planId) {
         if (helperPurchaseBusy || !helperShopState) return;
+        if (planId === 'permanent') return buyHelperInstallment();
         const plan = helperShopState.plans.find((item) => item.id === planId);
         if (!plan) return;
         if (plan.id === 'permanent' && helperPricingBusy) return helperShopMessage('正在同步永久售价，请稍候。');
