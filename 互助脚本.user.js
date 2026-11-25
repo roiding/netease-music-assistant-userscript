@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.9.0
-// @description  V4.8.1：Helper 每月可 1:1 转 credit 为 rcredit，rcredit 随时提现；取消每月衰减。
+// @version      4.10.2
+// @description  网易云互助播放，支持 LDC 红包、钱包与互助功能。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
 // @match        *://music.163.com/*
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.9.0';
+    const CURRENT_VERSION = '4.10.2';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1191,7 +1191,7 @@
     }
 
     function activateHelperTab(tabName, persist = true) {
-        const nextTab = ['help', 'wallet', 'account'].includes(tabName) ? tabName : 'help';
+        const nextTab = ['help', 'wallet', 'red-packets', 'account'].includes(tabName) ? tabName : 'help';
         document.querySelectorAll('[data-helper-tab]').forEach((button) => {
             const active = button.dataset.helperTab === nextTab;
             button.classList.toggle('active', active);
@@ -1201,6 +1201,69 @@
             panel.classList.toggle('active', panel.dataset.helperPanel === nextTab);
         });
         if (persist) GM_setValue('musicHelperActiveTab', nextTab);
+        if (nextTab === 'red-packets') void refreshRedPackets();
+    }
+
+    async function refreshRedPackets() {
+        const container = document.getElementById('red-packets-list');
+        if (!container || !GM_getValue(TOKEN_KEY, '')) return;
+        container.textContent = '正在读取红包...';
+        let data;
+        try {
+            data = await callAPI('GET', '/red-packets');
+        } catch {
+            container.textContent = '红包暂时无法读取，请点击刷新重试。';
+            return;
+        }
+        if (!data || isApiErrorPayload(data)) {
+            container.textContent = getPayloadErrorText(data, '红包暂时无法读取，请点击刷新重试。');
+            return;
+        }
+        const campaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
+        if (!campaigns.length) {
+            container.textContent = '当前没有可领取的红包，福利上新时会显示在这里。';
+            return;
+        }
+        container.innerHTML = campaigns.map((campaign) => {
+            const claim = campaign.claim;
+            const status = !claim ? `还剩 ${Number(campaign.remainingCount || 0)} 份 · 总额 ${escapeHtml(campaign.totalLdc)} LDC`
+                : claim.status === 'succeeded' ? `已领取 ${escapeHtml(claim.amountLdc)} LDC${claim.providerTradeNo ? ` · 流水 ${escapeHtml(claim.providerTradeNo)}` : ''}`
+                    : claim.status === 'failed' ? '上次发放未成功，可重新领取。'
+                        : claim.status === 'uncertain' || claim.status === 'requesting'
+                            ? '领取结果正在核对中，请勿重复操作；如长时间未更新请联系管理员。'
+                                : claim.status === 'pending'
+                                    ? '已锁定份额，等待管理员生成并完成付款。'
+                                : `领取状态：${escapeHtml(claim.status)}`;
+            const expiry = campaign.expiresAt ? ` · 截止 ${new Date(campaign.expiresAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` : '';
+            const canClaim = !claim || claim.status === 'failed';
+            return `<article class="helper-red-packet"><strong>🧧 ${escapeHtml(campaign.title)}</strong><p>${escapeHtml(campaign.totalLdc)} LDC · ${Number(campaign.totalCount)} 份${expiry}</p><div class="helper-red-packet-state">${status}</div>${canClaim ? `<button class="helper-btn helper-btn-danger" type="button" data-red-packet-claim="${escapeHtml(campaign.id)}">${claim ? '重新领取' : '拆开红包'}</button>` : ''}</article>`;
+        }).join('');
+        container.querySelectorAll('[data-red-packet-claim]').forEach((button) => {
+            button.addEventListener('click', () => claimRedPacketFromPanel(button));
+        });
+    }
+
+    async function claimRedPacketFromPanel(button) {
+        const campaignId = button && button.dataset.redPacketClaim;
+        if (!campaignId || button.disabled) return;
+        if (!window.confirm('现在领取会锁定一份红包，并由管理员通过易支付订单付款到当前绑定的收款应用。每个账号每个红包只能领取一次，确定继续吗？')) return;
+        button.disabled = true;
+        button.textContent = '正在领取…';
+        try {
+            const result = await callAPI('POST', `/red-packets/${encodeURIComponent(campaignId)}/claim`, {});
+            if (!result || isApiErrorPayload(result)) {
+                alert(getPayloadErrorText(result, '红包领取失败，请刷新后重试。'));
+            } else if (result.claim && result.claim.status === 'succeeded') {
+                alert(`领取成功！已收到 ${result.claim.amountLdc} LDC。`);
+            } else if (result.claim && ['uncertain', 'requesting', 'pending'].includes(result.claim.status)) {
+                alert('红包份额已锁定，等待付款结果确认。请勿重复操作，稍后查看状态即可。');
+            } else if (result.claim && result.claim.status === 'failed') {
+                alert('本次发放失败，红包份额已退回，可以重新领取。');
+            }
+        } catch {
+            alert('领取结果暂时无法确认。为避免重复发款，请刷新状态并联系管理员核对。');
+        }
+        await refreshRedPackets().catch(() => {});
     }
 
     function updatePrimaryAction() {
@@ -1574,6 +1637,7 @@
                         <div class="helper-tabs" role="tablist" aria-label="互助面板功能">
                             <button type="button" data-helper-tab="help" role="tab"><span>▶</span>互助</button>
                             <button type="button" data-helper-tab="wallet" role="tab"><span>◈</span>钱包</button>
+                            <button type="button" data-helper-tab="red-packets" role="tab"><span>🧧</span>红包</button>
                             <button type="button" data-helper-tab="account" role="tab"><span>●</span>账户</button>
                         </div>
 
@@ -1632,6 +1696,12 @@
                                     <button id="merchant-bind-btn" class="helper-btn helper-btn-teal" type="button">绑定收款应用</button>
                                 </div>
                             </div>
+                        </section>
+
+                        <section class="helper-tab-panel" data-helper-panel="red-packets" role="tabpanel">
+                            <div class="helper-section-heading"><strong>福利红包</strong><button id="red-packets-refresh" type="button">刷新</button></div>
+                            <p class="helper-card-copy">领取后锁定一份红包，由管理员通过易支付订单付款至你绑定的收款应用；每个账号每个红包限领一次。</p>
+                            <div id="red-packets-list" class="helper-red-packets-list" aria-live="polite">正在读取红包...</div>
                         </section>
 
                         <section class="helper-tab-panel" data-helper-panel="account" role="tabpanel">
@@ -1776,7 +1846,7 @@
             .helper-auth-card strong { font-size: 14px; }
             .helper-auth-card p { margin: 4px 0 0; color: var(--mh-muted); font-size: 11px; line-height: 1.5; }
             .helper-auth-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; color: #fff; background: #1e1f22; font-size: 12px; font-weight: 800; }
-            .helper-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 12px; padding: 4px; border-radius: 12px; background: var(--mh-soft); }
+            .helper-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-bottom: 12px; padding: 4px; border-radius: 12px; background: var(--mh-soft); }
             .helper-tabs button {
                 display: flex;
                 align-items: center;
@@ -1795,6 +1865,11 @@
             .helper-tabs button.active { color: var(--mh-red-dark); background: #fff; box-shadow: 0 2px 8px rgba(31,33,38,.08); font-weight: 700; }
             .helper-tab-panel { display: none; gap: 10px; }
             .helper-tab-panel.active { display: grid; }
+            .helper-red-packets-list { display: grid; gap: 9px; }
+            .helper-red-packet { padding: 12px; border: 1px solid #f1d9b0; border-radius: 12px; background: linear-gradient(145deg, #fffaf0, #fff); }
+            .helper-red-packet strong { display: block; color: #7d4a17; font-size: 13px; }
+            .helper-red-packet p { margin: 5px 0 9px; color: var(--mh-muted); font-size: 10px; line-height: 1.5; }
+            .helper-red-packet-state { margin: 0 0 8px; color: #77614b; font-size: 11px; line-height: 1.5; }
             .helper-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
             .helper-section-heading strong { font-size: 14px; }
             .helper-section-heading span { color: var(--mh-muted); font-size: 10px; }
@@ -1896,6 +1971,7 @@
             button.onclick = () => activateHelperTab(button.dataset.helperTab);
         });
         activateHelperTab(savedTab, false);
+        document.getElementById('red-packets-refresh').onclick = () => void refreshRedPackets();
 
         const merchantHelpButton = document.getElementById('merchant-help-btn');
         const merchantHelpPopover = document.getElementById('merchant-help-popover');
@@ -2441,6 +2517,7 @@
             updateVolunteerModeUI();
             hydrateTargetInput(d.participant);
             updateMerchantCredentialControls();
+            if (GM_getValue('musicHelperActiveTab', 'help') === 'red-packets') void refreshRedPackets();
             if (!announcementCheckedAfterLogin) {
                 announcementCheckedAfterLogin = true;
                 void refreshAnnouncement();
