@@ -89,6 +89,15 @@ paying-link expiry never prove that an existing payment was unpaid.
 
 `互助脚本.user.js` is the public userscript distributed to general users.
 
+## Red Packet Amounts (4.10.4)
+
+The public music script 4.10.4 shows the assigned LDC amount immediately after
+claiming a red packet and in the open popup. Requesting/pending claims explicitly
+say they are awaiting administrator payment; uncertain claims show the amount
+with payment confirmation pending. Only a server `succeeded` claim says 已到账.
+Refreshing the popup uses the latest server amount, including administrator
+adjustments. Already-claimed packets still do not trigger another automatic popup.
+
 ## Administrator Userscript: `Linux.do自动付款助手.user.js`
 
 A standalone userscript designed specifically for the administrator, kept

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.10.3
+// @version      4.10.4
 // @description  网易云互助播放，支持 LDC 红包、钱包与互助功能。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.10.3';
+    const CURRENT_VERSION = '4.10.4';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -1217,6 +1217,17 @@
         if (popup) popup.hidden = true;
     }
 
+    function redPacketClaimMessage(claim) {
+        const amount = claim.amountLdc == null ? '金额待确认' : `${claim.amountLdc} LDC`;
+        if (claim.status === 'succeeded') {
+            return `已到账 ${amount}${claim.providerTradeNo ? ` · 流水 ${claim.providerTradeNo}` : ''}`;
+        }
+        if (claim.status === 'failed') return '本次发放未成功，份额已退回；红包仍开放时可重新领取。';
+        if (claim.status === 'uncertain') return `已锁定 ${amount}，付款结果待确认。请勿重复操作；尚未确认到账。`;
+        if (claim.status === 'requesting' || claim.status === 'pending') return `你领到了 ${amount}，等待管理员付款（尚未到账）。`;
+        return `领取状态：${claim.status}`;
+    }
+
     async function refreshRedPackets({ openIfAvailable = false } = {}) {
         const container = document.getElementById('red-packets-list');
         const popup = document.getElementById('red-packets-popup');
@@ -1249,13 +1260,7 @@
         container.innerHTML = campaigns.map((campaign) => {
             const claim = campaign.claim;
             const status = !claim ? `还剩 ${Number(campaign.remainingCount || 0)} 份 · 总额 ${escapeHtml(campaign.totalLdc)} LDC`
-                : claim.status === 'succeeded' ? `已领取 ${escapeHtml(claim.amountLdc)} LDC${claim.providerTradeNo ? ` · 流水 ${escapeHtml(claim.providerTradeNo)}` : ''}`
-                    : claim.status === 'failed' ? '上次发放未成功，可重新领取。'
-                        : claim.status === 'uncertain' || claim.status === 'requesting'
-                            ? '领取结果正在核对中，请勿重复操作；如长时间未更新请联系管理员。'
-                                : claim.status === 'pending'
-                                    ? '已锁定份额，等待管理员生成并完成付款。'
-                                : `领取状态：${escapeHtml(claim.status)}`;
+                : escapeHtml(redPacketClaimMessage(claim));
             const expiry = campaign.expiresAt ? ` · 截止 ${new Date(campaign.expiresAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` : '';
             const canClaim = isRedPacketAvailable(campaign);
             return `<article class="helper-red-packet"><strong>🧧 ${escapeHtml(campaign.title)}</strong><p>${escapeHtml(campaign.totalLdc)} LDC · ${Number(campaign.totalCount)} 份${expiry}</p><div class="helper-red-packet-state">${status}</div>${canClaim ? `<button class="helper-btn helper-btn-danger" type="button" data-red-packet-claim="${escapeHtml(campaign.id)}">${claim ? '重新领取' : '拆开红包'}</button>` : ''}</article>`;
@@ -1275,12 +1280,8 @@
             const result = await callAPI('POST', `/red-packets/${encodeURIComponent(campaignId)}/claim`, {});
             if (!result || isApiErrorPayload(result)) {
                 alert(getPayloadErrorText(result, '红包领取失败，请刷新后重试。'));
-            } else if (result.claim && result.claim.status === 'succeeded') {
-                alert(`领取成功！已收到 ${result.claim.amountLdc} LDC。`);
-            } else if (result.claim && ['uncertain', 'requesting', 'pending'].includes(result.claim.status)) {
-                alert('红包份额已锁定，等待付款结果确认。请勿重复操作，稍后查看状态即可。');
-            } else if (result.claim && result.claim.status === 'failed') {
-                alert('本次发放失败，红包份额已退回，可以重新领取。');
+            } else if (result.claim) {
+                alert(redPacketClaimMessage(result.claim));
             }
         } catch {
             alert('领取结果暂时无法确认。为避免重复发款，请刷新状态并联系管理员核对。');
