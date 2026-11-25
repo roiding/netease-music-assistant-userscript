@@ -676,7 +676,7 @@
         alert(`批量发款完成！\n成功: ${successCount} 笔\n失败: ${failCount} 笔`);
     }
 
-    async function executeSinglePayment(task, payKey) {
+    async function executeSinglePayment(task, payKey, isRetry = false) {
         if (!task.taskToken) {
             throw new Error('订单缺少服务端签名任务 Token (防越权拦截)');
         }
@@ -710,6 +710,19 @@
         }
 
         if (officialOrder.status !== 'pending') {
+            if (!isRetry && (officialOrder.status === 'expired' || officialOrder.status === 'timeout')) {
+                log(`  ⚠️ Linux.do 订单已超时失效 (${officialOrder.status})，正在自动换发新支付链接...`);
+                const reissued = await apiRequest('POST', `/admin/redemptions/${encodeURIComponent(task.redemptionId)}/reissue`);
+                if (reissued && reissued.redemption && reissued.redemption.latestPaymentUrl) {
+                    log('  → 新付款单号已生成，正在重新核验并付款...');
+                    const batch = await apiRequest('POST', '/admin/redemptions/auto-pay-batch', {
+                        redemptionIds: [task.redemptionId],
+                    });
+                    if (batch && batch.tasks && batch.tasks.length > 0) {
+                        return await executeSinglePayment(batch.tasks[0], payKey, true);
+                    }
+                }
+            }
             throw new Error(`Linux.do 订单状态不是 pending (当前为: ${officialOrder.status})，拒绝重复付款`);
         }
         if (String(officialOrder.payer_user_id) !== String(cachedLinuxDoUser.id)) {
