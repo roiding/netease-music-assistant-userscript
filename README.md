@@ -103,14 +103,23 @@ Features:
 - Performs zero-trust double-checking against Linux.do's official order API (`status === pending`, payee, amount, payer UID) before submitting payment.
 - Batch auto-pays verified orders in one click and reports confirmation back to the Worker backend.
 
-Version 1.0.2 fixes startup initialization and waits for administrator credential
-sync before fetching orders. Install this file again to update a locally installed
-copy; a Git push alone does not update that copy. The assistant prepares orders
+Version 1.0.3 checks Credit identity, queries payment details and submits payment
+with native same-origin `fetch` and `credentials: include` on credit.linux.do.
+It no longer uses extension requests for Credit cookies. The management page
+syncs administrator credentials and lists orders, but does not infer Credit
+login status cross-site or execute payments. After opening the management page,
+use **前往 Credit 核验并付款** and open the assistant there. HTTP 401/403,
+HTML challenge pages, invalid responses and network failures have separate
+diagnostics and all block payment; no payment request is automatically retried.
+Cookies are neither copied nor persisted by the assistant.
+
+Install this file again to update a locally installed copy; a Git push alone
+does not update that copy. The assistant prepares orders
 only after batch confirmation, rechecks original orders before replacement, and
 stops on expired or uncertain results instead of blindly retrying. Keep the
 reserved balance until the original payment has been reconciled.
 
-The script is distributed through Greasy Fork. Do not add GitHub/jsDelivr
+The public music script is distributed through Greasy Fork. Do not add GitHub/jsDelivr
 metadata URLs to the userscript header; Greasy Fork should be the install origin.
 The in-panel "更新脚本" button receives its URL from the Worker
 `GREASYFORK_SCRIPT_ID` / `USERSCRIPT_UPDATE_URL` configuration.

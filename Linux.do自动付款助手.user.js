@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         Linux.do 自动付款助手 (网易云音乐互助管理)
 // @namespace    https://roiding.dpdns.org/
-// @version      1.0.2
-// @description  网易云互助管理员专属独立脚本：在管理后台与 credit.linux.do 双端核验登录态、管理本地支付安全码、防越权自动拉取待付订单与零信任交叉核验一键付款。
+// @version      1.0.3
+// @description  网易云互助管理员独立脚本：后台同步管理凭据，Credit 页面同源核验登录态、管理本地支付安全码并核验待付订单后付款。
 // @author       Netease Music Helper
 // @match        https://credit.linux.do/*
 // @match        https://roiding.dpdns.org/admin*
 // @match        https://netease.ran-ding.gq/admin*
-// @connect      credit.linux.do
 // @connect      roiding.dpdns.org
 // @connect      netease.ran-ding.gq
 // @grant        GM_xmlhttpRequest
@@ -29,6 +28,8 @@
 
     const DEFAULT_API_BASE = 'https://roiding.dpdns.org';
     const DEFAULT_ADMIN_UID = '207121';
+    const CREDIT_ORIGIN = 'https://credit.linux.do';
+    const isCreditPage = location.origin === CREDIT_ORIGIN;
     const SERVICE_ORIGINS = [DEFAULT_API_BASE, 'https://netease.ran-ding.gq'];
     let assistantElements = null;
     let cachedLinuxDoUser = null;
@@ -36,6 +37,8 @@
     let isProcessing = false;
     let taskError = '';
     let tasksLoading = false;
+    let loginState = { kind: 'idle', message: '' };
+    let linuxDoUserRequest = null;
 
     function getApiBase() {
         const stored = String(GM_getValue(STORAGE_KEY_API_BASE, '') || DEFAULT_API_BASE).replace(/\/+$/, '');
@@ -123,6 +126,32 @@
             throw err;
         }
         return data;
+    }
+
+    async function creditRequest(method, path, body = undefined) {
+        if (!isCreditPage) throw new Error('请在 credit.linux.do 页面打开助手后核验登录并付款');
+        const target = new URL(path, CREDIT_ORIGIN);
+        const allowed = method === 'GET'
+            ? ['/api/v1/oauth/user-info', '/api/v1/merchant/payment/order'].includes(target.pathname)
+            : method === 'POST' && target.pathname === '/api/v1/merchant/payment';
+        if (target.origin !== CREDIT_ORIGIN || !allowed) throw new Error('不允许的 Credit 请求');
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
+        try {
+            const response = await fetch(target.href, {
+                method, credentials: 'include', mode: 'same-origin', cache: 'no-store', redirect: 'error',
+                headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+                ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+                signal: controller.signal,
+            });
+            return { status: response.status, responseText: await response.text() };
+        } catch {
+            throw new Error(controller.signal.aborted
+                ? 'Credit 同源请求超时，无法确认结果；请刷新状态，勿直接重复付款'
+                : 'Credit 同源请求失败或被重定向，不能据此认定未登录；请确认官网可正常访问后刷新');
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     const isAdminPage = location.hostname === 'roiding.dpdns.org' || location.hostname === 'netease.ran-ding.gq';
@@ -399,7 +428,7 @@
         modal.id = 'ldc-pay-assistant-modal';
         modal.innerHTML = `
             <div class="ldc-asst-header">
-                <h3>💳 网易云兑换自动发款助手</h3>
+                <h3>💳 网易云兑换自动发款助手 v1.0.3</h3>
                 <button class="ldc-asst-close" id="ldc-asst-close-btn">&times;</button>
             </div>
             <div class="ldc-asst-body">
@@ -438,7 +467,7 @@
             </div>
             <div class="ldc-asst-footer">
                 <button class="ldc-asst-btn ldc-asst-btn-secondary" id="ldc-asst-open-target-btn" type="button">
-                    ${isAdminPage ? '打开 Linux.do' : '打开管理后台'}
+                    ${isAdminPage ? '前往 Credit 核验并付款' : '打开管理后台'}
                 </button>
                 <button class="ldc-asst-btn ldc-asst-btn-primary" id="ldc-asst-pay-all-btn" type="button" disabled>一键付清 (0)</button>
             </div>
@@ -501,30 +530,38 @@
     }
 
     async function fetchLinuxDoUser() {
-        if (assistantElements) {
-            assistantElements.userView.innerHTML = '<div style="color:#64748b;">正在读取 Linux.do 登录态…</div>';
-        }
-        try {
-            const res = await httpXmlRequest({
-                method: 'GET',
-                url: 'https://credit.linux.do/api/v1/oauth/user-info',
-                withCredentials: true,
-            });
-            if (res.status === 200) {
-                const json = JSON.parse(res.responseText);
-                if (json && json.data && json.data.id) {
-                    cachedLinuxDoUser = json.data;
-                } else {
-                    cachedLinuxDoUser = null;
-                }
-            } else {
-                cachedLinuxDoUser = null;
-            }
-        } catch (e) {
+        if (!isCreditPage) {
             cachedLinuxDoUser = null;
-            console.warn('[自动付款助手] 无法获取 Linux.do 用户信息:', e);
+            loginState = { kind: 'credit_page_required', message: '后台页面不跨站判断 Credit 登录态。请点击“前往 Credit 核验并付款”，在官网页面使用同源登录会话。' };
+            updateUIState();
+            return;
         }
+        if (linuxDoUserRequest) return linuxDoUserRequest;
+        cachedLinuxDoUser = null;
+        loginState = { kind: 'loading', message: '正在通过 Credit 同源接口核验登录态…' };
         updateUIState();
+        linuxDoUserRequest = (async () => {
+            try {
+                const res = await creditRequest('GET', '/api/v1/oauth/user-info');
+                if (res.status === 401) throw new Error('Credit 身份接口返回 HTTP 401：当前会话未授权，请在此网站重新登录后刷新');
+                if (res.status === 403) throw new Error('Credit 身份接口返回 HTTP 403：访问被拒绝或需要网站验证，不代表你没有登录');
+                if (res.status !== 200) throw new Error(`Credit 身份接口返回 HTTP ${res.status}，暂时无法核验登录态`);
+                let json;
+                try { json = JSON.parse(res.responseText); }
+                catch { throw new Error('Credit 身份接口返回非 JSON（可能是登录或验证页面），无法核验身份'); }
+                if (!json || json.error_msg !== '' || !/^[1-9]\d*$/.test(String(json.data?.id || ''))) {
+                    throw new Error('Credit 身份接口未返回有效用户信息，无法核验身份；已禁用付款');
+                }
+                cachedLinuxDoUser = json.data;
+                loginState = { kind: 'authenticated', message: '' };
+            } catch (error) {
+                loginState = { kind: 'error', message: error.message };
+            } finally {
+                linuxDoUserRequest = null;
+                updateUIState();
+            }
+        })();
+        return linuxDoUserRequest;
     }
 
     function updateUIState() {
@@ -540,8 +577,8 @@
         const expectedUid = getExpectedAdminUid();
         if (!cachedLinuxDoUser) {
             assistantElements.userView.innerHTML = `
-                <div style="color:#ef4444;font-weight:600;">
-                    🔴 未检测到 Linux.do 登录态。请在当前浏览器登录 <a href="https://credit.linux.do" target="_blank" style="color:#0f766e;">credit.linux.do</a> 后点击刷新。
+                <div style="color:${loginState.kind === 'error' ? '#ef4444' : '#64748b'};font-weight:600;">
+                    ${escapeHtml(loginState.message || '等待核验 Credit 登录态…')}
                 </div>
             `;
         } else if (String(cachedLinuxDoUser.id) !== expectedUid) {
@@ -640,6 +677,8 @@
         }).join('');
 
         const canPay = !!(
+            isCreditPage &&
+            loginState.kind === 'authenticated' &&
             !isProcessing &&
             cachedLinuxDoUser &&
             String(cachedLinuxDoUser.id) === getExpectedAdminUid() &&
@@ -652,6 +691,10 @@
 
     async function startBatchPayment() {
         if (isProcessing || tasksLoading || taskError) return;
+        if (!isCreditPage) {
+            alert('请点击“前往 Credit 核验并付款”，付款只在 credit.linux.do 页面执行。');
+            return;
+        }
         const payKey = getPayKey();
         if (!/^\d{6}$/.test(payKey)) {
             alert('请先配置 6 位 Linux.do 支付安全码。');
@@ -704,9 +747,10 @@
     }
 
     async function executeSinglePayment(task, payKey) {
+        if (!isCreditPage) throw new Error('付款只允许在 credit.linux.do 页面执行');
         await fetchLinuxDoUser();
         if (!cachedLinuxDoUser || String(cachedLinuxDoUser.id) !== getExpectedAdminUid()) {
-            throw new Error('付款账号已失效或变化');
+            throw new Error(loginState.message || '付款账号已失效或变化');
         }
         const batch = await apiRequest('POST', '/admin/redemptions/auto-pay-batch', {
             redemptionIds: [task.redemptionId],
@@ -729,11 +773,7 @@
         }
 
         log(`  → [安全核查 2/4] 向 Linux.do 官方核验订单状态与金额 (单号 ${claim.orderNo})...`);
-        const queryRes = await httpXmlRequest({
-            method: 'GET',
-            url: `https://credit.linux.do/api/v1/merchant/payment/order?order_no=${encodeURIComponent(claim.orderNo)}`,
-            withCredentials: true,
-        });
+        const queryRes = await creditRequest('GET', `/api/v1/merchant/payment/order?order_no=${encodeURIComponent(claim.orderNo)}`);
         if (queryRes.status !== 200) {
             throw new Error(`Linux.do 订单查询失败: HTTP ${queryRes.status}`);
         }
@@ -768,17 +808,9 @@
         }
 
         log('  → [执行 3/4] 安全核查全部通过，向 Linux.do 提交支付...');
-        const payRes = await httpXmlRequest({
-            method: 'POST',
-            url: 'https://credit.linux.do/api/v1/merchant/payment',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            data: JSON.stringify({
-                order_no: claim.orderNo,
-                pay_key: payKey,
-            }),
-            withCredentials: true,
+        const payRes = await creditRequest('POST', '/api/v1/merchant/payment', {
+            order_no: claim.orderNo,
+            pay_key: payKey,
         });
         if (payRes.status !== 200) {
             throw new Error(`支付接口返回错误: HTTP ${payRes.status}`);
