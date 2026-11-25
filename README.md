@@ -103,7 +103,7 @@ Features:
 - Performs zero-trust double-checking against Linux.do's official order API (`status === pending`, payee, amount, payer UID) before submitting payment.
 - Batch auto-pays verified orders in one click and reports confirmation back to the Worker backend.
 
-Version 1.0.7 checks Credit identity, queries payment details and submits payment
+Version 1.0.8 checks Credit identity, queries payment details and submits payment
 with native same-origin `fetch` and `credentials: include` on credit.linux.do.
 It no longer uses extension requests for Credit cookies. The management page
 syncs administrator credentials and lists orders, but does not infer Credit
@@ -120,7 +120,7 @@ that header with HTTP 403 even when login and GET order queries work. HTTP 403
 diagnostics distinguish explicit CSRF rejection, HTML verification pages and
 other permission/risk errors without dumping response bodies or secrets. A
 payment error never triggers automatic payment retry or replacement. The
-assistant title and batch-start log both display 1.0.7; update the installed
+assistant title and batch-start log display the current version; update the installed
 Tampermonkey copy and reload the existing Credit tab before using it.
 
 Unavailable checkout links (404, expired or non-pending) are reported to the
@@ -146,8 +146,27 @@ not gateway cancellation; late callbacks remain tracked. A locally expired
 order may be re-prepared once before any payment POST. The assistant 1.0.6
 already supports this backend decision; this policy change needs no script update.
 
-Install this file again to update a locally installed copy; a Git push alone
-does not update that copy. The assistant prepares orders
+Version 1.0.8 adds a native Tampermonkey update channel, independent of the
+public music script's Greasy Fork release:
+
+- Install/download: https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/Linux.do%E8%87%AA%E5%8A%A8%E4%BB%98%E6%AC%BE%E5%8A%A9%E6%89%8B.user.js
+- Metadata checks: https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/Linux.do%E8%87%AA%E5%8A%A8%E4%BB%98%E6%AC%BE%E5%8A%A9%E6%89%8B.meta.js
+
+Install/update once from the URL to bootstrap older copies without update
+metadata. Keep Tampermonkey's automatic update checking enabled; subsequent
+version bumps are checked on its configured schedule, not instantly on Git push.
+The panel also has an **安装 / 检查新版** link. Reload Credit after updating and
+do not update during an active payment batch. Keep the script's name, namespace
+and storage keys unchanged so updates do not create a second copy. Disable any
+duplicate older installation. No custom remote-code loader, additional host
+permission or credential forwarding is used for updates.
+
+For future assistant releases, bump the userscript version and visible version
+labels, copy its exact metadata header into `Linux.do自动付款助手.meta.js`, run
+the backend's assistant/release tests, and push both files to `main`. The test
+suite requires metadata to match the executable header exactly.
+
+The assistant prepares orders
 only after batch confirmation, rechecks original orders before replacement, and
 stops on uncertain results instead of blindly retrying. Keep the
 reserved balance until the original payment has been reconciled.

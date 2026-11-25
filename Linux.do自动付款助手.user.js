@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Linux.do 自动付款助手 (网易云音乐互助管理)
 // @namespace    https://roiding.dpdns.org/
-// @version      1.0.7
+// @version      1.0.8
 // @description  网易云互助管理员独立脚本：后台同步管理凭据，Credit 页面同源核验登录态、管理本地支付安全码并核验待付订单后付款。
 // @author       Netease Music Helper
+// @updateURL    https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/Linux.do%E8%87%AA%E5%8A%A8%E4%BB%98%E6%AC%BE%E5%8A%A9%E6%89%8B.meta.js
+// @downloadURL  https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/Linux.do%E8%87%AA%E5%8A%A8%E4%BB%98%E6%AC%BE%E5%8A%A9%E6%89%8B.user.js
 // @match        https://credit.linux.do/*
 // @match        https://roiding.dpdns.org/admin*
 // @match        https://netease.ran-ding.gq/admin*
@@ -29,6 +31,7 @@
     const DEFAULT_API_BASE = 'https://roiding.dpdns.org';
     const DEFAULT_ADMIN_UID = '207121';
     const CREDIT_ORIGIN = 'https://credit.linux.do';
+    const ASSISTANT_DOWNLOAD_URL = 'https://raw.githubusercontent.com/roiding/netease-music-assistant-userscript/main/Linux.do%E8%87%AA%E5%8A%A8%E4%BB%98%E6%AC%BE%E5%8A%A9%E6%89%8B.user.js';
     const isCreditPage = location.origin === CREDIT_ORIGIN;
     const SERVICE_ORIGINS = [DEFAULT_API_BASE, 'https://netease.ran-ding.gq'];
     let assistantElements = null;
@@ -446,10 +449,17 @@
         modal.id = 'ldc-pay-assistant-modal';
         modal.innerHTML = `
             <div class="ldc-asst-header">
-                <h3>💳 兑换与红包自动发款助手 v1.0.7</h3>
+                <h3>💳 兑换与红包自动发款助手 v1.0.8</h3>
                 <button class="ldc-asst-close" id="ldc-asst-close-btn">&times;</button>
             </div>
             <div class="ldc-asst-body">
+                <div class="ldc-asst-card">
+                    <div class="ldc-asst-card-title">
+                        <span>版本更新 · v1.0.8</span>
+                        <a href="${ASSISTANT_DOWNLOAD_URL}" target="_blank" rel="noopener noreferrer" style="color:#0f766e;text-decoration:none;font-weight:600;">安装 / 检查新版</a>
+                    </div>
+                    <div style="color:#64748b;">已配置篡改猴自动更新，请保持脚本更新检查开启。更新后刷新 Credit 页面；不要在付款进行中更新。</div>
+                </div>
                 <div class="ldc-asst-card" id="ldc-asst-user-card">
                     <div class="ldc-asst-card-title">
                         <span>Linux.do 登录态</span>
@@ -775,7 +785,7 @@
         isProcessing = true;
         assistantElements.payAllBtn.disabled = true;
         assistantElements.payAllBtn.textContent = '正在自动处理中…';
-        log(`=== 开始批量付款流程，共 ${selectedTasks.length} 笔（助手 v1.0.7）===`);
+        log(`=== 开始批量付款流程，共 ${selectedTasks.length} 笔（助手 v1.0.8）===`);
 
         let successCount = 0;
         let failCount = 0;
