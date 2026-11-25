@@ -99,11 +99,11 @@ Features:
 - Runs on `https://credit.linux.do/*` and the admin management console (`https://roiding.dpdns.org/admin`).
 - Verifies `credit.linux.do` login state and strictly validates that the logged-in Linux.do UID matches the administrator (`207121`).
 - Locally manages the 6-digit payment security code via Tampermonkey storage (`GM_setValue`); only credit.linux.do receives it when paying. Do not sync or share script storage.
-- Reads up to 50 pending rcredit redemptions (`GET /api/admin/redemptions/auto-pay-tasks`) without creating orders. Red-packet claims remain managed separately in the admin console.
+- Reads up to 50 pending rcredit redemptions and 50 red-packet claims (`GET /api/admin/redemptions/auto-pay-tasks`) without creating orders. Each task has a type-qualified identity; packet payouts never debit rcredit.
 - Performs zero-trust double-checking against Linux.do's official order API (`status === pending`, payee, amount, payer UID) before submitting payment.
 - Batch auto-pays verified orders in one click and reports confirmation back to the Worker backend.
 
-Version 1.0.5 checks Credit identity, queries payment details and submits payment
+Version 1.0.6 checks Credit identity, queries payment details and submits payment
 with native same-origin `fetch` and `credentials: include` on credit.linux.do.
 It no longer uses extension requests for Credit cookies. The management page
 syncs administrator credentials and lists orders, but does not infer Credit
@@ -119,15 +119,25 @@ an independent creator query. Already-paid orders settle; other results block
 the link from batching. Blocked tasks remain visible but are excluded from the
 confirmed batch total. Repeated list refreshes cannot revive a reported link.
 Refreshing orders performs a creator-side recheck of blocked attempts. There
-is no human-confirmation override. A paid result settles, an unequivocal
-missing-order result can allow a replacement in a later confirmed batch, and
-ambiguous results remain blocked; `status=0` or a checkout 404 alone never
-triggers retry or payment.
+is no human-confirmation override. A paid result settles; an unequivocal
+missing-order result or combined expiry evidence can allow a replacement.
+Ambiguous results remain blocked; `status=0` or a checkout 404 alone never
+triggers retry or payment. Packet success requires server claim settlement,
+not merely an acknowledgement from the checkout payment endpoint.
+
+After matching the order fields, the assistant records the official checkout
+ID and expiry through an admin-bound signed task. The backend independently
+queries the creator and requires matching merchant, business number, amount,
+provider ID, `status=0`, explicit zero trade time and the saved expiry plus a
+30-second grace. This observation comes from the trusted administrator's
+browser; it is not provider-signed evidence. A confirmed expired/unpaid order
+may be re-prepared once before any payment POST. Old unavailable links without
+recorded expiry remain blocked rather than being blindly replaced.
 
 Install this file again to update a locally installed copy; a Git push alone
 does not update that copy. The assistant prepares orders
 only after batch confirmation, rechecks original orders before replacement, and
-stops on expired or uncertain results instead of blindly retrying. Keep the
+stops on uncertain results instead of blindly retrying. Keep the
 reserved balance until the original payment has been reconciled.
 
 The public music script is distributed through Greasy Fork. Do not add GitHub/jsDelivr

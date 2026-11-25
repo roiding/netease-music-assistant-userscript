@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 自动付款助手 (网易云音乐互助管理)
 // @namespace    https://roiding.dpdns.org/
-// @version      1.0.5
+// @version      1.0.6
 // @description  网易云互助管理员独立脚本：后台同步管理凭据，Credit 页面同源核验登录态、管理本地支付安全码并核验待付订单后付款。
 // @author       Netease Music Helper
 // @match        https://credit.linux.do/*
@@ -420,7 +420,7 @@
         const bubble = document.createElement('div');
         bubble.id = 'ldc-pay-assistant-bubble';
         bubble.innerHTML = `
-            <span>💳 兑换发款助手</span>
+            <span>💳 兑换与红包发款助手</span>
             <span id="ldc-pay-assistant-badge" style="display:none;">0</span>
         `;
         document.body.appendChild(bubble);
@@ -429,7 +429,7 @@
         modal.id = 'ldc-pay-assistant-modal';
         modal.innerHTML = `
             <div class="ldc-asst-header">
-                <h3>💳 网易云兑换自动发款助手 v1.0.5</h3>
+                <h3>💳 兑换与红包自动发款助手 v1.0.6</h3>
                 <button class="ldc-asst-close" id="ldc-asst-close-btn">&times;</button>
             </div>
             <div class="ldc-asst-body">
@@ -453,7 +453,7 @@
 
                 <div class="ldc-asst-card">
                     <div class="ldc-asst-card-title">
-                        <span>待支付兑换单 (<span id="ldc-asst-task-count">0</span>)</span>
+                        <span>待支付兑换 / 红包 (<span id="ldc-asst-task-count">0</span>)</span>
                         <a href="javascript:void(0)" id="ldc-asst-refresh-tasks-btn" style="color:#0f766e;text-decoration:none;font-weight:600;">刷新</a>
                     </div>
                     <div id="ldc-asst-task-list" style="max-height:160px;overflow-y:auto;">
@@ -617,7 +617,7 @@
             data.tasks.forEach((task) => amountMilli(task.amountLdc));
             pendingTasks = Array.isArray(data.tasks) ? data.tasks : [];
             for (const task of pendingTasks) {
-                if (task.orderNo && unavailablePaymentOrders.get(task.redemptionId) === task.orderNo) task.autoPayBlocked = true;
+                if (task.orderNo && unavailablePaymentOrders.get(taskKey(task)) === task.orderNo) task.autoPayBlocked = true;
             }
             if (data.admin && data.admin.providerUserId) {
                 setExpectedAdminUid(data.admin.providerUserId);
@@ -643,8 +643,11 @@
         updateUIState();
         try {
             for (const task of pendingTasks.filter((entry) => entry.autoPayBlocked)) {
-                const result = await apiRequest('POST', `/admin/redemptions/${encodeURIComponent(task.redemptionId)}/refresh`, {});
-                if (result.redemption && !result.redemption.autoPayBlocked) unavailablePaymentOrders.delete(task.redemptionId);
+                const path = task.kind === 'red_packet'
+                    ? `/admin/red-packets/${encodeURIComponent(task.campaignId)}/claims/${encodeURIComponent(task.claimId)}/refresh`
+                    : `/admin/redemptions/${encodeURIComponent(task.redemptionId)}/refresh`;
+                const result = await apiRequest('POST', path, {});
+                if ((result.redemption && !result.redemption.autoPayBlocked) || ['failed', 'paid'].includes(result.paymentState)) unavailablePaymentOrders.delete(taskKey(task));
             }
         } catch (error) {
             log('系统复查未完成：' + error.message);
@@ -652,6 +655,14 @@
             isProcessing = false;
             await fetchPendingTasks();
         }
+    }
+
+    function taskKey(task) {
+        return `${task.kind || 'redemption'}:${task.targetId || task.redemptionId || task.claimId}`;
+    }
+
+    function paymentConfirmed(result, task) {
+        return task.kind === 'red_packet' ? result.claim?.status === 'succeeded' : result.redemption?.status === 'paid';
     }
 
     function renderTaskList() {
@@ -689,7 +700,7 @@
                 <div class="ldc-asst-task-item">
                     <div>
                         <div class="ldc-asst-task-user">${escapeHtml(task.displayName || '用户')} (UID: ${escapeHtml(task.currentProviderUserId || '-')})</div>
-                        <div class="ldc-asst-task-sub">${escapeHtml(task.rcredits || 0)} rcredit · ${task.autoPayBlocked ? '链接不可用，等待系统查单；点刷新可复查' : task.paymentState === 'pending' ? '未确认成功，链接需核验' : escapeHtml(task.paymentState)} · 单号 ${escapeHtml(task.orderNo || task.redemptionId)}</div>
+                        <div class="ldc-asst-task-sub">${task.kind === 'red_packet' ? `红包 · ${escapeHtml(task.campaignTitle || '')}` : `兑换 · ${escapeHtml(task.rcredits || 0)} rcredit`} · ${task.autoPayBlocked ? '链接不可用，等待系统查单；点刷新可复查' : task.paymentState === 'pending' ? '未确认成功，链接需核验' : escapeHtml(task.paymentState)} · 单号 ${escapeHtml(task.orderNo || task.targetId || task.redemptionId)}</div>
                     </div>
                     <div style="text-align:right;">
                         <div class="ldc-asst-task-amt">${escapeHtml(task.amountLdc)} LDC</div>
@@ -754,7 +765,7 @@
 
         for (let index = 0; index < selectedTasks.length; index++) {
             const task = selectedTasks[index];
-            log(`[${index + 1}/${selectedTasks.length}] 处理兑换单 ${task.redemptionId} (${task.amountLdc} LDC)...`);
+            log(`[${index + 1}/${selectedTasks.length}] 处理${task.kind === 'red_packet' ? '红包' : '兑换'}单 ${task.targetId || task.redemptionId || task.claimId} (${task.amountLdc} LDC)...`);
 
             try {
                 await executeSinglePayment(task, payKey);
@@ -774,7 +785,7 @@
         alert(`批量发款完成！\n成功: ${successCount} 笔\n失败: ${failCount} 笔`);
     }
 
-    async function executeSinglePayment(task, payKey) {
+    async function executeSinglePayment(task, payKey, replacementCount = 0) {
         if (!isCreditPage) throw new Error('付款只允许在 credit.linux.do 页面执行');
         if (task.autoPayBlocked) throw new Error('该付款链接已停用，等待系统复查结果');
         await fetchLinuxDoUser();
@@ -782,9 +793,9 @@
             throw new Error(loginState.message || '付款账号已失效或变化');
         }
         const batch = await apiRequest('POST', '/admin/redemptions/auto-pay-batch', {
-            redemptionIds: [task.redemptionId],
+            targets: [{ kind: task.kind || 'redemption', id: task.targetId || task.redemptionId || task.claimId }],
         });
-        const fresh = batch.tasks?.find((entry) => entry.redemptionId === task.redemptionId);
+        const fresh = batch.tasks?.find((entry) => taskKey(entry) === taskKey(task));
         if (!fresh?.taskToken) throw new Error(batch.errors?.[0]?.message || '后端未授权付款，请刷新订单状态');
         if (amountMilli(fresh.amountLdc) !== amountMilli(task.amountLdc)) throw new Error('金额已变化，请重新确认');
         task = { ...task, ...fresh };
@@ -805,7 +816,7 @@
         log(`  → [安全核查 2/4] 核验官方付款链接（业务单号 ${claim.merchantOrderNo}）...`);
         const queryRes = await creditRequest('GET', `/api/v1/merchant/payment/order?order_no=${encodeURIComponent(claim.orderNo)}`);
         if (queryRes.status === 404) {
-            return handleUnavailablePaymentLink(task, 'http_404');
+            return handleUnavailablePaymentLink(task, 'http_404', payKey, replacementCount);
         }
         if (queryRes.status !== 200) {
             throw new Error(`Linux.do 订单查询失败: HTTP ${queryRes.status}`);
@@ -821,12 +832,6 @@
             throw new Error('未在 Linux.do 查到该订单');
         }
 
-        if (officialOrder.status !== 'pending') {
-            return handleUnavailablePaymentLink(task, 'order_not_pending');
-        }
-        const expiresAt = Date.parse(officialOrder.expires_at);
-        if (!Number.isFinite(expiresAt)) throw new Error('官方付款页未返回有效的链接到期时间；支付结果需查单核实');
-        if (expiresAt <= Date.now()) return handleUnavailablePaymentLink(task, 'link_expired');
         if (!claim.payeeUserId || !claim.merchantPid || !claim.merchantOrderNo
             || String(officialOrder.payee_user_id) !== String(claim.payeeUserId)
             || String(officialOrder.client_id) !== String(claim.merchantPid)
@@ -839,6 +844,16 @@
         if (amountMilli(officialOrder.amount) !== amountMilli(claim.expectedAmount)) {
             throw new Error('订单金额与系统记录不一致');
         }
+        if (officialOrder.status !== 'pending') return handleUnavailablePaymentLink(task, 'order_not_pending', payKey, replacementCount);
+        const expiresAt = Date.parse(officialOrder.expires_at);
+        if (!Number.isFinite(expiresAt)) throw new Error('官方付款页未返回有效的链接到期时间；支付结果需查单核实');
+        await apiRequest('POST', '/merchant-auto-pay/observe', {
+            taskToken: task.taskToken,
+            order: { id: officialOrder.id, client_id: officialOrder.client_id, merchant_order_no: officialOrder.merchant_order_no,
+                payee_user_id: officialOrder.payee_user_id, payer_user_id: officialOrder.payer_user_id, amount: officialOrder.amount,
+                status: officialOrder.status, created_at: officialOrder.created_at, expires_at: officialOrder.expires_at },
+        });
+        if (expiresAt <= Date.now()) return handleUnavailablePaymentLink(task, 'link_expired', payKey, replacementCount);
 
         log('  → [执行 3/4] 安全核查全部通过，向 Linux.do 提交支付...');
         const payRes = await creditRequest('POST', '/api/v1/merchant/payment', {
@@ -863,16 +878,16 @@
             taskToken: task.taskToken,
             paid: true,
         });
-        if (confirmation.redemption?.status !== 'paid') {
+        if (!paymentConfirmed(confirmation, task)) {
             throw new Error('付款已提交，但尚未确认到账');
         }
     }
 
-    async function handleUnavailablePaymentLink(task, reasonCode) {
+    async function handleUnavailablePaymentLink(task, reasonCode, payKey, replacementCount) {
         task.autoPayBlocked = true;
-        unavailablePaymentOrders.set(task.redemptionId, task.merchantOrderNo);
+        unavailablePaymentOrders.set(taskKey(task), task.merchantOrderNo);
         for (const pending of pendingTasks) {
-            if (pending.redemptionId === task.redemptionId) pending.autoPayBlocked = true;
+            if (taskKey(pending) === taskKey(task)) pending.autoPayBlocked = true;
         }
         updateUIState();
         log('  → 付款链接不可用；未提交支付，正在通知后台停用旧链接并使用创建方凭据复查原单…');
@@ -884,9 +899,14 @@
         } catch {
             throw new Error('付款链接不可用且后台登记未完成；本次未提交付款，请到管理后台停用该链接并核对原单');
         }
-        if (result.redemption?.status === 'paid') {
+        if (paymentConfirmed(result, task)) {
             log('  → 创建方查单确认原单已付，未再次提交付款');
             return;
+        }
+        if (result.canReprepare && replacementCount < 1) {
+            unavailablePaymentOrders.delete(taskKey(task));
+            log('  → 后端确认旧单已过期未成功或明确不存在，自动生成新付款单并重新核验（本次最多一次）');
+            return executeSinglePayment({ ...task, autoPayBlocked: false }, payKey, replacementCount + 1);
         }
         throw new Error('旧付款链接已停用并移出批付；系统已复查，网关尚未提供可安全重付的明确结果。无需人工确认，点击订单刷新可再次查单');
     }
