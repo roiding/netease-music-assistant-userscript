@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 自动付款助手 (网易云音乐互助管理)
 // @namespace    https://roiding.dpdns.org/
-// @version      1.0.3
+// @version      1.0.4
 // @description  网易云互助管理员独立脚本：后台同步管理凭据，Credit 页面同源核验登录态、管理本地支付安全码并核验待付订单后付款。
 // @author       Netease Music Helper
 // @match        https://credit.linux.do/*
@@ -39,6 +39,7 @@
     let tasksLoading = false;
     let loginState = { kind: 'idle', message: '' };
     let linuxDoUserRequest = null;
+    const unavailablePaymentOrders = new Map();
 
     function getApiBase() {
         const stored = String(GM_getValue(STORAGE_KEY_API_BASE, '') || DEFAULT_API_BASE).replace(/\/+$/, '');
@@ -428,7 +429,7 @@
         modal.id = 'ldc-pay-assistant-modal';
         modal.innerHTML = `
             <div class="ldc-asst-header">
-                <h3>💳 网易云兑换自动发款助手 v1.0.3</h3>
+                <h3>💳 网易云兑换自动发款助手 v1.0.4</h3>
                 <button class="ldc-asst-close" id="ldc-asst-close-btn">&times;</button>
             </div>
             <div class="ldc-asst-body">
@@ -615,6 +616,9 @@
             }
             data.tasks.forEach((task) => amountMilli(task.amountLdc));
             pendingTasks = Array.isArray(data.tasks) ? data.tasks : [];
+            for (const task of pendingTasks) {
+                if (task.orderNo && unavailablePaymentOrders.get(task.redemptionId) === task.orderNo) task.autoPayBlocked = true;
+            }
             if (data.admin && data.admin.providerUserId) {
                 setExpectedAdminUid(data.admin.providerUserId);
             }
@@ -660,14 +664,15 @@
         }
 
         let totalLdc = 0;
+        const payableCount = pendingTasks.filter((task) => !task.autoPayBlocked).length;
         assistantElements.taskList.innerHTML = pendingTasks.map((task) => {
             const ldc = parseFloat(task.amountLdc || '0');
-            totalLdc += ldc;
+            if (!task.autoPayBlocked) totalLdc += ldc;
             return `
                 <div class="ldc-asst-task-item">
                     <div>
                         <div class="ldc-asst-task-user">${escapeHtml(task.displayName || '用户')} (UID: ${escapeHtml(task.currentProviderUserId || '-')})</div>
-                        <div class="ldc-asst-task-sub">${escapeHtml(task.rcredits || 0)} rcredit · ${escapeHtml(task.paymentState)} · 单号 ${escapeHtml(task.orderNo || task.redemptionId)}</div>
+                        <div class="ldc-asst-task-sub">${escapeHtml(task.rcredits || 0)} rcredit · ${task.autoPayBlocked ? '链接不可用，已移出批付，请在管理后台核实原单' : task.paymentState === 'pending' ? '未确认成功，链接需核验' : escapeHtml(task.paymentState)} · 单号 ${escapeHtml(task.orderNo || task.redemptionId)}</div>
                     </div>
                     <div style="text-align:right;">
                         <div class="ldc-asst-task-amt">${escapeHtml(task.amountLdc)} LDC</div>
@@ -677,6 +682,7 @@
         }).join('');
 
         const canPay = !!(
+            payableCount > 0 &&
             isCreditPage &&
             loginState.kind === 'authenticated' &&
             !isProcessing &&
@@ -686,7 +692,8 @@
         );
 
         assistantElements.payAllBtn.disabled = !canPay;
-        assistantElements.payAllBtn.textContent = `一键付清 (${count} 笔 / ${totalLdc.toFixed(2)} LDC)`;
+        assistantElements.payAllBtn.textContent = payableCount
+            ? `核验并支付 (${payableCount} 笔 / ${totalLdc.toFixed(2)} LDC)` : '原付款链接待核对，不能批付';
     }
 
     async function startBatchPayment() {
@@ -709,17 +716,21 @@
             return;
         }
 
-        const selectedTasks = pendingTasks.map((task) => ({ ...task }));
+        const selectedTasks = pendingTasks.filter((task) => !task.autoPayBlocked).map((task) => ({ ...task }));
+        if (!selectedTasks.length) {
+            alert('付款链接已停用。请在管理后台核对原单，不能反复批付或仅凭 404 重建。');
+            return;
+        }
         const totalLdc = selectedTasks.reduce((total, task) => total + amountMilli(task.amountLdc), 0) / 1000;
 
-        if (!window.confirm(`确认向当前 ${pendingTasks.length} 笔订单自动付款，共计支付 ${totalLdc.toFixed(2)} LDC？\n\n付款将由当前 Linux.do 账号 (${cachedLinuxDoUser.username}) 执行。`)) {
+        if (!window.confirm(`确认向当前 ${selectedTasks.length} 笔订单自动付款，共计支付 ${totalLdc.toFixed(2)} LDC？\n\n付款将由当前 Linux.do 账号 (${cachedLinuxDoUser.username}) 执行。`)) {
             return;
         }
 
         isProcessing = true;
         assistantElements.payAllBtn.disabled = true;
         assistantElements.payAllBtn.textContent = '正在自动处理中…';
-        log(`=== 开始批量付款流程，共 ${pendingTasks.length} 笔 ===`);
+        log(`=== 开始批量付款流程，共 ${selectedTasks.length} 笔 ===`);
 
         let successCount = 0;
         let failCount = 0;
@@ -748,6 +759,7 @@
 
     async function executeSinglePayment(task, payKey) {
         if (!isCreditPage) throw new Error('付款只允许在 credit.linux.do 页面执行');
+        if (task.autoPayBlocked) throw new Error('该付款链接已停用，请在管理后台核实原单');
         await fetchLinuxDoUser();
         if (!cachedLinuxDoUser || String(cachedLinuxDoUser.id) !== getExpectedAdminUid()) {
             throw new Error(loginState.message || '付款账号已失效或变化');
@@ -767,13 +779,17 @@
         if (!claim || !claim.ok) {
             throw new Error('服务端签名校验未通过');
         }
+        task.merchantOrderNo = claim.merchantOrderNo;
         if (String(claim.payerUserId) !== String(cachedLinuxDoUser.id)
             || amountMilli(claim.expectedAmount) !== amountMilli(task.amountLdc)) {
             throw new Error('任务付款人或金额不匹配');
         }
 
-        log(`  → [安全核查 2/4] 向 Linux.do 官方核验订单状态与金额 (单号 ${claim.orderNo})...`);
+        log(`  → [安全核查 2/4] 核验官方付款链接（业务单号 ${claim.merchantOrderNo}）...`);
         const queryRes = await creditRequest('GET', `/api/v1/merchant/payment/order?order_no=${encodeURIComponent(claim.orderNo)}`);
+        if (queryRes.status === 404) {
+            return handleUnavailablePaymentLink(task, 'http_404');
+        }
         if (queryRes.status !== 200) {
             throw new Error(`Linux.do 订单查询失败: HTTP ${queryRes.status}`);
         }
@@ -789,11 +805,11 @@
         }
 
         if (officialOrder.status !== 'pending') {
-            throw new Error(`Linux.do 订单状态不是 pending (当前为: ${officialOrder.status})，拒绝重复付款`);
+            return handleUnavailablePaymentLink(task, 'order_not_pending');
         }
         const expiresAt = Date.parse(officialOrder.expires_at);
         if (!Number.isFinite(expiresAt)) throw new Error('官方付款页未返回有效的链接到期时间；支付结果需查单核实');
-        if (expiresAt <= Date.now()) throw new Error('付款链接已过期；兑换仍保留，需用创建方凭据查单，不能仅凭链接过期重付');
+        if (expiresAt <= Date.now()) return handleUnavailablePaymentLink(task, 'link_expired');
         if (!claim.payeeUserId || !claim.merchantPid || !claim.merchantOrderNo
             || String(officialOrder.payee_user_id) !== String(claim.payeeUserId)
             || String(officialOrder.client_id) !== String(claim.merchantPid)
@@ -833,6 +849,29 @@
         if (confirmation.redemption?.status !== 'paid') {
             throw new Error('付款已提交，但尚未确认到账');
         }
+    }
+
+    async function handleUnavailablePaymentLink(task, reasonCode) {
+        task.autoPayBlocked = true;
+        unavailablePaymentOrders.set(task.redemptionId, task.merchantOrderNo);
+        for (const pending of pendingTasks) {
+            if (pending.redemptionId === task.redemptionId) pending.autoPayBlocked = true;
+        }
+        updateUIState();
+        log('  → 付款链接不可用；未提交支付，正在通知后台停用旧链接并使用创建方凭据复查原单…');
+        let result;
+        try {
+            result = await apiRequest('POST', '/merchant-auto-pay/link-unavailable', {
+                taskToken: task.taskToken, reasonCode,
+            });
+        } catch {
+            throw new Error('付款链接不可用且后台登记未完成；本次未提交付款，请到管理后台停用该链接并核对原单');
+        }
+        if (result.redemption?.status === 'paid') {
+            log('  → 创建方查单确认原单已付，未再次提交付款');
+            return;
+        }
+        throw new Error('旧付款链接已停用并移出批付；status=0 不是链接可用证明。请在管理后台核对原单，确认已关闭且未付款后才能重新生成');
     }
 
 })();

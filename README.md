@@ -103,7 +103,7 @@ Features:
 - Performs zero-trust double-checking against Linux.do's official order API (`status === pending`, payee, amount, payer UID) before submitting payment.
 - Batch auto-pays verified orders in one click and reports confirmation back to the Worker backend.
 
-Version 1.0.3 checks Credit identity, queries payment details and submits payment
+Version 1.0.4 checks Credit identity, queries payment details and submits payment
 with native same-origin `fetch` and `credentials: include` on credit.linux.do.
 It no longer uses extension requests for Credit cookies. The management page
 syncs administrator credentials and lists orders, but does not infer Credit
@@ -112,6 +112,14 @@ use **前往 Credit 核验并付款** and open the assistant there. HTTP 401/403
 HTML challenge pages, invalid responses and network failures have separate
 diagnostics and all block payment; no payment request is automatically retried.
 Cookies are neither copied nor persisted by the assistant.
+
+Unavailable checkout links (404, expired or non-pending) are reported to the
+backend with the signed task, without posting a payment. The backend performs
+an independent creator query. Already-paid orders settle; other results block
+the link from batching. Blocked tasks remain visible but are excluded from the
+confirmed batch total. Repeated list refreshes cannot revive a reported link.
+Only the admin console's explicit closed-and-unpaid reconciliation flow can
+replace such an attempt; `status=0` or a checkout 404 alone never triggers retry.
 
 Install this file again to update a locally installed copy; a Git push alone
 does not update that copy. The assistant prepares orders
