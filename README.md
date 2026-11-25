@@ -120,19 +120,21 @@ the link from batching. Blocked tasks remain visible but are excluded from the
 confirmed batch total. Repeated list refreshes cannot revive a reported link.
 Refreshing orders performs a creator-side recheck of blocked attempts. There
 is no human-confirmation override. A paid result settles; an unequivocal
-missing-order result or combined expiry evidence can allow a replacement.
-Ambiguous results remain blocked; `status=0` or a checkout 404 alone never
+missing-order result or a successful zero query after 15 minutes can allow a replacement.
+Ambiguous results remain blocked; `status=0` before the deadline or a checkout 404 alone never
 triggers retry or payment. Packet success requires server claim settlement,
 not merely an acknowledgement from the checkout payment endpoint.
 
 After matching the order fields, the assistant records the official checkout
-ID and expiry through an admin-bound signed task. The backend independently
-queries the creator and requires matching merchant, business number, amount,
-provider ID, `status=0`, explicit zero trade time and the saved expiry plus a
-30-second grace. This observation comes from the trusted administrator's
-browser; it is not provider-signed evidence. A confirmed expired/unpaid order
-may be re-prepared once before any payment POST. Old unavailable links without
-recorded expiry remain blocked rather than being blindly replaced.
+ID and expiry through an admin-bound signed task for diagnostics. Under the
+administrator-selected policy, the backend independently queries the creator:
+`code=1,status=0` plus at least 15 minutes since the payment attempt's creation
+means locally expired. It rejects mismatched returned merchant, business number
+or amount and never expires on query/network errors. No transaction-history
+API, saved checkout expiry or specific trade-time string is required. This is
+not gateway cancellation; late callbacks remain tracked. A locally expired
+order may be re-prepared once before any payment POST. The assistant 1.0.6
+already supports this backend decision; this policy change needs no script update.
 
 Install this file again to update a locally installed copy; a Git push alone
 does not update that copy. The assistant prepares orders
