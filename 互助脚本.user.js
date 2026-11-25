@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云音乐互助播放脚本
 // @namespace    http://tampermonkey.net/
-// @version      4.10.2
+// @version      4.10.3
 // @description  网易云互助播放，支持 LDC 红包、钱包与互助功能。
 // @author       Netease Music Helper
 // @license      Copyright Netease Music Helper
@@ -28,7 +28,7 @@
     if (window.self !== window.top) return;
 
     const SERVICE_ORIGINS = ['https://roiding.dpdns.org', 'https://netease.ran-ding.gq'];
-    const CURRENT_VERSION = '4.10.2';
+    const CURRENT_VERSION = '4.10.3';
     const UPDATE_FALLBACK_URL = 'https://greasyfork.org/scripts';
     const MIN_HELP_TRACK_DURATION_MS = 30 * 1000;
     const LINUXDO_PROBE_SOURCE = 'music-helper-linuxdo-probe';
@@ -90,6 +90,8 @@
     let currentJobBountyRcredits = 0;
     let forcedBountyMode = null;
     let creditSpendingBusy = false;
+    let redPacketRequestId = 0;
+    let redPacketCheckedUserId = '';
 
     const TAB_INSTANCE_ID = getOrCreateTabInstanceId();
 
@@ -1191,7 +1193,7 @@
     }
 
     function activateHelperTab(tabName, persist = true) {
-        const nextTab = ['help', 'wallet', 'red-packets', 'account'].includes(tabName) ? tabName : 'help';
+        const nextTab = ['help', 'wallet', 'account'].includes(tabName) ? tabName : 'help';
         document.querySelectorAll('[data-helper-tab]').forEach((button) => {
             const active = button.dataset.helperTab === nextTab;
             button.classList.toggle('active', active);
@@ -1201,27 +1203,47 @@
             panel.classList.toggle('active', panel.dataset.helperPanel === nextTab);
         });
         if (persist) GM_setValue('musicHelperActiveTab', nextTab);
-        if (nextTab === 'red-packets') void refreshRedPackets();
     }
 
-    async function refreshRedPackets() {
+    function isRedPacketAvailable(campaign) {
+        return campaign.status === 'active' && Number(campaign.remainingCount) > 0
+            && (!campaign.expiresAt || Date.parse(campaign.expiresAt) > Date.now())
+            && (!campaign.claim || campaign.claim.status === 'failed');
+    }
+
+    function closeRedPacketPopup() {
+        redPacketRequestId += 1;
+        const popup = document.getElementById('red-packets-popup');
+        if (popup) popup.hidden = true;
+    }
+
+    async function refreshRedPackets({ openIfAvailable = false } = {}) {
         const container = document.getElementById('red-packets-list');
+        const popup = document.getElementById('red-packets-popup');
+        const panel = document.getElementById('music-helper-panel');
         if (!container || !GM_getValue(TOKEN_KEY, '')) return;
-        container.textContent = '正在读取红包...';
+        const requestId = ++redPacketRequestId;
         let data;
         try {
             data = await callAPI('GET', '/red-packets');
         } catch {
-            container.textContent = '红包暂时无法读取，请点击刷新重试。';
+            if (requestId === redPacketRequestId && !popup.hidden) container.textContent = '红包暂时无法读取，请点击刷新重试。';
             return;
         }
+        if (requestId !== redPacketRequestId || !GM_getValue(TOKEN_KEY, '') || panel.style.display === 'none') return;
         if (!data || isApiErrorPayload(data)) {
-            container.textContent = getPayloadErrorText(data, '红包暂时无法读取，请点击刷新重试。');
+            if (!popup.hidden) container.textContent = getPayloadErrorText(data, '红包暂时无法读取，请点击刷新重试。');
             return;
         }
-        const campaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
+        const allCampaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
+        const available = allCampaigns.filter(isRedPacketAvailable);
+        const campaigns = popup.hidden ? available : allCampaigns.filter((campaign) => isRedPacketAvailable(campaign) || campaign.claim);
+        if (openIfAvailable && available.length && popup.hidden) {
+            popup.hidden = false;
+            document.getElementById('red-packets-close').focus();
+        }
         if (!campaigns.length) {
-            container.textContent = '当前没有可领取的红包，福利上新时会显示在这里。';
+            popup.hidden = true;
             return;
         }
         container.innerHTML = campaigns.map((campaign) => {
@@ -1235,7 +1257,7 @@
                                     ? '已锁定份额，等待管理员生成并完成付款。'
                                 : `领取状态：${escapeHtml(claim.status)}`;
             const expiry = campaign.expiresAt ? ` · 截止 ${new Date(campaign.expiresAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` : '';
-            const canClaim = !claim || claim.status === 'failed';
+            const canClaim = isRedPacketAvailable(campaign);
             return `<article class="helper-red-packet"><strong>🧧 ${escapeHtml(campaign.title)}</strong><p>${escapeHtml(campaign.totalLdc)} LDC · ${Number(campaign.totalCount)} 份${expiry}</p><div class="helper-red-packet-state">${status}</div>${canClaim ? `<button class="helper-btn helper-btn-danger" type="button" data-red-packet-claim="${escapeHtml(campaign.id)}">${claim ? '重新领取' : '拆开红包'}</button>` : ''}</article>`;
         }).join('');
         container.querySelectorAll('[data-red-packet-claim]').forEach((button) => {
@@ -1637,7 +1659,6 @@
                         <div class="helper-tabs" role="tablist" aria-label="互助面板功能">
                             <button type="button" data-helper-tab="help" role="tab"><span>▶</span>互助</button>
                             <button type="button" data-helper-tab="wallet" role="tab"><span>◈</span>钱包</button>
-                            <button type="button" data-helper-tab="red-packets" role="tab"><span>🧧</span>红包</button>
                             <button type="button" data-helper-tab="account" role="tab"><span>●</span>账户</button>
                         </div>
 
@@ -1698,12 +1719,6 @@
                             </div>
                         </section>
 
-                        <section class="helper-tab-panel" data-helper-panel="red-packets" role="tabpanel">
-                            <div class="helper-section-heading"><strong>福利红包</strong><button id="red-packets-refresh" type="button">刷新</button></div>
-                            <p class="helper-card-copy">领取后锁定一份红包，由管理员通过易支付订单付款至你绑定的收款应用；每个账号每个红包限领一次。</p>
-                            <div id="red-packets-list" class="helper-red-packets-list" aria-live="polite">正在读取红包...</div>
-                        </section>
-
                         <section class="helper-tab-panel" data-helper-panel="account" role="tabpanel">
                             <div class="helper-section-heading"><strong>账户</strong><span>身份与权限</span></div>
                             <div id="account-summary" class="helper-account-card">正在读取账户信息...</div>
@@ -1737,6 +1752,14 @@
                         </section>
                     </div>
                 </div>
+            </div>
+            <div id="red-packets-popup" class="helper-red-packet-overlay" hidden>
+                <section class="helper-red-packet-dialog" role="dialog" aria-modal="true" aria-labelledby="red-packets-title">
+                    <div class="helper-section-heading"><strong id="red-packets-title">🧧 有新的福利红包</strong><button id="red-packets-close" class="helper-icon-btn" type="button" aria-label="关闭红包弹窗">×</button></div>
+                    <p class="helper-card-copy">拆开后锁定一份红包，管理员通过易支付付款到你绑定的收款应用。每个账号每个红包限领一次。</p>
+                    <div id="red-packets-list" class="helper-red-packets-list" aria-live="polite"></div>
+                    <button id="red-packets-refresh" class="helper-btn helper-btn-ghost" type="button">刷新领取状态</button>
+                </section>
             </div>
         `;
         document.body.appendChild(container);
@@ -1866,6 +1889,11 @@
             .helper-tab-panel { display: none; gap: 10px; }
             .helper-tab-panel.active { display: grid; }
             .helper-red-packets-list { display: grid; gap: 9px; }
+            .helper-red-packet-overlay { position: fixed; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(30, 20, 20, 0.38); z-index: 2; }
+            .helper-red-packet-overlay[hidden] { display: none; }
+            .helper-red-packet-dialog { width: min(360px, 100%); max-height: 85vh; overflow-y: auto; padding: 20px; border-radius: 18px; background: #fffaf5; box-shadow: 0 20px 60px rgba(60, 20, 20, 0.25); }
+            .helper-red-packet-dialog .helper-icon-btn { color: #8e3333; border-color: #ead1cc; background: #fff; }
+            .helper-red-packet-dialog > .helper-btn { margin-top: 12px; }
             .helper-red-packet { padding: 12px; border: 1px solid #f1d9b0; border-radius: 12px; background: linear-gradient(145deg, #fffaf0, #fff); }
             .helper-red-packet strong { display: block; color: #7d4a17; font-size: 13px; }
             .helper-red-packet p { margin: 5px 0 9px; color: var(--mh-muted); font-size: 10px; line-height: 1.5; }
@@ -1972,6 +2000,20 @@
         });
         activateHelperTab(savedTab, false);
         document.getElementById('red-packets-refresh').onclick = () => void refreshRedPackets();
+        document.getElementById('red-packets-close').onclick = closeRedPacketPopup;
+        document.getElementById('red-packets-popup').addEventListener('click', (event) => {
+            if (event.target.id === 'red-packets-popup') closeRedPacketPopup();
+        });
+        document.getElementById('red-packets-popup').addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeRedPacketPopup();
+            if (event.key === 'Tab') {
+                const controls = [...document.getElementById('red-packets-popup').querySelectorAll('button:not([disabled])')];
+                const first = controls[0];
+                const last = controls[controls.length - 1];
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+            }
+        });
 
         const merchantHelpButton = document.getElementById('merchant-help-btn');
         const merchantHelpPopover = document.getElementById('merchant-help-popover');
@@ -2032,8 +2074,8 @@
         document.getElementById('merchant-bind-btn').onclick = bindMerchantCredential;
         document.getElementById('helper-announcement-close-btn').onclick = hideAnnouncement;
         document.getElementById('manual-btn').onclick = () => { triggerIframePlay(); document.getElementById('manual-btn').style.display='none'; };
-        document.getElementById('min-btn').onclick = () => { document.getElementById('music-helper-panel').style.display='none'; document.getElementById('helper-toggle-btn').style.display='flex'; };
-        document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; } };
+        document.getElementById('min-btn').onclick = () => { closeRedPacketPopup(); document.getElementById('music-helper-panel').style.display='none'; document.getElementById('helper-toggle-btn').style.display='flex'; };
+        document.getElementById('helper-toggle-btn').onclick = () => { if(!isDragging){ document.getElementById('music-helper-panel').style.display='block'; document.getElementById('helper-toggle-btn').style.display='none'; activateHelperTab('help'); void refreshRedPackets({ openIfAvailable: true }); } };
 
         updateVolunteerModeUI();
 
@@ -2316,6 +2358,8 @@
     }
 
     function clearStoredToken(errorCode = '') {
+        closeRedPacketPopup();
+        redPacketCheckedUserId = '';
         releaseTabLock();
         GM_setValue(TOKEN_KEY, '');
         GM_setValue(LEGACY_TOKEN_KEY, '');
@@ -2517,7 +2561,10 @@
             updateVolunteerModeUI();
             hydrateTargetInput(d.participant);
             updateMerchantCredentialControls();
-            if (GM_getValue('musicHelperActiveTab', 'help') === 'red-packets') void refreshRedPackets();
+            if (redPacketCheckedUserId !== String(d.user.userId)) {
+                redPacketCheckedUserId = String(d.user.userId);
+                void refreshRedPackets({ openIfAvailable: true });
+            }
             if (!announcementCheckedAfterLogin) {
                 announcementCheckedAfterLogin = true;
                 void refreshAnnouncement();

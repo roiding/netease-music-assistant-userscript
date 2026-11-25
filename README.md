@@ -80,27 +80,35 @@ On that date, a normal consumer account can start the local helper workflow and
 earn decayable credit without opening Helper; banned and restricted accounts
 remain excluded. The panel reads the Beijing activity date from `/api/me` and
 shows the automatically generated announcement.
-When configured by the backend, rcredit redemption can be settled immediately
-through the official LDC merchant distribution API. Ambiguous results remain
-frozen for administrator reconciliation instead of being retried automatically.
-The panel's **红包** tab lists administrator-created LDC benefit packets. Claim
-actions pay directly to the signed-in Linux.do account; a packet can only be
-claimed once per account, and ambiguous payment results remain locked for review.
+rcredit redemption and LDC packets use merchant payment orders created with
+the recipient's bound EasyPay credentials; the administrator pays the order.
+Opening the panel checks for active, unclaimed packets and shows a popup only
+when a share is available. There is no separate packet tab. Claiming reserves
+one share; server-confirmed payment determines receipt. Campaign expiry and
+paying-link expiry never prove that an existing payment was unpaid.
 
 `互助脚本.user.js` is the public userscript distributed to general users.
 
 ## Administrator Userscript: `Linux.do自动付款助手.user.js`
 
-A standalone, private userscript designed specifically for the administrator. It
-does not get published to Greasy Fork or shared with general users.
+A standalone userscript designed specifically for the administrator, kept
+separate from the public music script. It is stored in this repository; the
+public music script is the Greasy Fork release artifact.
 
 Features:
 - Runs on `https://credit.linux.do/*` and the admin management console (`https://roiding.dpdns.org/admin`).
 - Verifies `credit.linux.do` login state and strictly validates that the logged-in Linux.do UID matches the administrator (`207121`).
-- Locally manages the 6-digit payment security code via Tampermonkey storage (`GM_setValue`), keeping it strictly offline from the server.
-- Securely queries pending payable redemptions and red-packet claims (`GET /api/admin/redemptions/auto-pay-tasks`) via server-signed task tokens.
+- Locally manages the 6-digit payment security code via Tampermonkey storage (`GM_setValue`); only credit.linux.do receives it when paying. Do not sync or share script storage.
+- Reads up to 50 pending rcredit redemptions (`GET /api/admin/redemptions/auto-pay-tasks`) without creating orders. Red-packet claims remain managed separately in the admin console.
 - Performs zero-trust double-checking against Linux.do's official order API (`status === pending`, payee, amount, payer UID) before submitting payment.
 - Batch auto-pays verified orders in one click and reports confirmation back to the Worker backend.
+
+Version 1.0.2 fixes startup initialization and waits for administrator credential
+sync before fetching orders. Install this file again to update a locally installed
+copy; a Git push alone does not update that copy. The assistant prepares orders
+only after batch confirmation, rechecks original orders before replacement, and
+stops on expired or uncertain results instead of blindly retrying. Keep the
+reserved balance until the original payment has been reconciled.
 
 The script is distributed through Greasy Fork. Do not add GitHub/jsDelivr
 metadata URLs to the userscript header; Greasy Fork should be the install origin.

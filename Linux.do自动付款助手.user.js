@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Linux.do 自动付款助手 (网易云音乐互助管理)
 // @namespace    https://roiding.dpdns.org/
-// @version      1.0.1
+// @version      1.0.2
 // @description  网易云互助管理员专属独立脚本：在管理后台与 credit.linux.do 双端核验登录态、管理本地支付安全码、防越权自动拉取待付订单与零信任交叉核验一键付款。
 // @author       Netease Music Helper
-// @match        *://credit.linux.do/*
+// @match        https://credit.linux.do/*
 // @match        https://roiding.dpdns.org/admin*
 // @match        https://netease.ran-ding.gq/admin*
 // @connect      credit.linux.do
@@ -20,6 +20,7 @@
 
 (function () {
     'use strict';
+    if (window.self !== window.top) return;
 
     const STORAGE_KEY_PAY_KEY = 'music_helper_auto_pay_key';
     const STORAGE_KEY_ADMIN_TOKEN = 'music_helper_admin_token';
@@ -28,12 +29,23 @@
 
     const DEFAULT_API_BASE = 'https://roiding.dpdns.org';
     const DEFAULT_ADMIN_UID = '207121';
+    const SERVICE_ORIGINS = [DEFAULT_API_BASE, 'https://netease.ran-ding.gq'];
+    let assistantElements = null;
+    let cachedLinuxDoUser = null;
+    let pendingTasks = [];
+    let isProcessing = false;
+    let taskError = '';
+    let tasksLoading = false;
 
     function getApiBase() {
-        return (GM_getValue(STORAGE_KEY_API_BASE, '') || DEFAULT_API_BASE).replace(/\/+$/, '');
+        const stored = String(GM_getValue(STORAGE_KEY_API_BASE, '') || DEFAULT_API_BASE).replace(/\/+$/, '');
+        if (!SERVICE_ORIGINS.includes(stored)) throw new Error('后台地址不在允许的服务域名中');
+        return stored;
     }
     function setApiBase(val) {
-        GM_setValue(STORAGE_KEY_API_BASE, String(val || '').trim().replace(/\/+$/, ''));
+        const origin = String(val || '').trim().replace(/\/+$/, '');
+        if (!SERVICE_ORIGINS.includes(origin)) throw new Error('后台地址不在允许的服务域名中');
+        GM_setValue(STORAGE_KEY_API_BASE, origin);
     }
     function getAdminToken() {
         return GM_getValue(STORAGE_KEY_ADMIN_TOKEN, '');
@@ -52,6 +64,20 @@
     }
     function setExpectedAdminUid(val) {
         GM_setValue(STORAGE_KEY_EXPECTED_UID, String(val || '').trim());
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[character]));
+    }
+
+    function amountMilli(value) {
+        const match = /^(\d+)(?:\.(\d{1,3}))?$/.exec(String(value ?? ''));
+        if (!match) throw new Error('金额格式无效，已停止付款');
+        const amount = Number(match[1]) * 1000 + Number((match[2] || '').padEnd(3, '0'));
+        if (!Number.isSafeInteger(amount) || amount <= 0 || amount % 10) throw new Error('金额无效，已停止付款');
+        return amount;
     }
 
     function httpXmlRequest(options) {
@@ -87,9 +113,9 @@
         try {
             data = JSON.parse(res.responseText);
         } catch {
-            data = { error: 'invalid_json', raw: res.responseText };
+            throw new Error('后台未返回有效 JSON，请检查登录态或验证页面');
         }
-        if (res.status >= 400) {
+        if (res.status < 200 || res.status >= 300 || !data || data.error) {
             const msg = (data && (data.message || data.error)) || `HTTP ${res.status}`;
             const err = new Error(msg);
             err.status = res.status;
@@ -101,15 +127,20 @@
 
     const isAdminPage = location.hostname === 'roiding.dpdns.org' || location.hostname === 'netease.ran-ding.gq';
 
-    if (isAdminPage) {
-        syncAdminSessionOnPage();
-    }
+    const adminSessionReady = isAdminPage ? syncAdminSessionOnPage() : Promise.resolve();
 
     GM_registerMenuCommand('设置 Linux.do 支付安全码（仅本机）', () => {
         promptConfigurePayKey();
     });
     GM_registerMenuCommand('配置网易云后台服务与凭证', () => {
         promptConfigureBackend();
+    });
+    GM_registerMenuCommand('清除本机支付码与管理凭据', () => {
+        GM_deleteValue(STORAGE_KEY_PAY_KEY);
+        GM_deleteValue(STORAGE_KEY_ADMIN_TOKEN);
+        pendingTasks = [];
+        taskError = '本机凭据已清除，请重新登录后台。';
+        updateUIState();
     });
 
     injectAssistantUI();
@@ -137,10 +168,9 @@
     }
 
     function promptConfigurePayKey() {
-        const current = getPayKey();
         const input = window.prompt(
-            '输入 6 位 Linux.do 支付安全码：\n（它只保存在本机脚本存储中，绝不上传到任何服务器）',
-            current || ''
+            '输入 6 位 Linux.do 支付安全码：\n仅存篡改猴存储，付款时仅发给 credit.linux.do，不传互助后台。不要同步或分享此脚本的存储数据。',
+            ''
         );
         if (input === null) return;
         const trimmed = String(input || '').trim();
@@ -158,18 +188,12 @@
         const base = window.prompt('网易云后台 API 域名：', currentBase) || '';
         if (base.trim()) setApiBase(base.trim());
 
-        const currentToken = getAdminToken();
-        const token = window.prompt('管理员 Token (在管理页会自动刷新)：', currentToken) || '';
+        const token = window.prompt('管理员 Token (在管理页会自动刷新)：', '') || '';
         if (token.trim()) setAdminToken(token.trim());
 
         alert('后台连接配置已更新。');
         updateUIState();
     }
-
-    let assistantElements = null;
-    let cachedLinuxDoUser = null;
-    let pendingTasks = [];
-    let isProcessing = false;
 
     function injectAssistantUI() {
         const style = document.createElement('style');
@@ -523,16 +547,16 @@
         } else if (String(cachedLinuxDoUser.id) !== expectedUid) {
             assistantElements.userView.innerHTML = `
                 <div style="color:#f59e0b;font-weight:600;">
-                    ⚠️ 当前登录账号 (${cachedLinuxDoUser.username}, UID: ${cachedLinuxDoUser.id}) 与预设管理员 UID (${expectedUid}) 不一致！已禁用付款。
+                    ⚠️ 当前登录账号 (${escapeHtml(cachedLinuxDoUser.username)}, UID: ${escapeHtml(cachedLinuxDoUser.id)}) 与预设管理员 UID (${escapeHtml(expectedUid)}) 不一致！已禁用付款。
                 </div>
             `;
         } else {
-            const avatar = cachedLinuxDoUser.avatar_url ? `<img class="ldc-asst-avatar" src="${cachedLinuxDoUser.avatar_url}" alt="avatar">` : '<div class="ldc-asst-avatar"></div>';
+            const avatar = '<div class="ldc-asst-avatar"></div>';
             assistantElements.userView.innerHTML = `
                 ${avatar}
                 <div>
-                    <div style="font-weight:700;color:#0f172a;">${cachedLinuxDoUser.nickname || cachedLinuxDoUser.username} (UID: ${cachedLinuxDoUser.id})</div>
-                    <div style="color:#64748b;font-size:11px;">可用余额: <strong style="color:#0f766e;">${cachedLinuxDoUser.available_balance || '0.00'} LDC</strong></div>
+                    <div style="font-weight:700;color:#0f172a;">${escapeHtml(cachedLinuxDoUser.nickname || cachedLinuxDoUser.username)} (UID: ${escapeHtml(cachedLinuxDoUser.id)})</div>
+                    <div style="color:#64748b;font-size:11px;">可用余额: <strong style="color:#0f766e;">${escapeHtml(cachedLinuxDoUser.available_balance || '0.00')} LDC</strong></div>
                 </div>
             `;
         }
@@ -541,10 +565,18 @@
     }
 
     async function fetchPendingTasks() {
-        if (!assistantElements) return;
-        assistantElements.taskList.innerHTML = '<div style="color:#64748b;text-align:center;padding:12px 0;">正在拉取待支付任务…</div>';
+        if (!assistantElements || isProcessing || tasksLoading) return;
+        tasksLoading = true;
+        taskError = '';
+        pendingTasks = [];
+        renderTaskList();
         try {
+            await adminSessionReady;
             const data = await apiRequest('GET', '/admin/redemptions/auto-pay-tasks');
+            if (!data.ok || !data.admin?.providerUserId || !Array.isArray(data.tasks)) {
+                throw new Error('待付订单响应无效，请更新后端');
+            }
+            data.tasks.forEach((task) => amountMilli(task.amountLdc));
             pendingTasks = Array.isArray(data.tasks) ? data.tasks : [];
             if (data.admin && data.admin.providerUserId) {
                 setExpectedAdminUid(data.admin.providerUserId);
@@ -552,29 +584,16 @@
         } catch (err) {
             pendingTasks = [];
             if (err.status === 401 || err.status === 403) {
-                assistantElements.taskList.innerHTML = `
-                    <div style="color:#ef4444;text-align:center;padding:12px 0;">
-                        后台管理权限未验证。请先在管理后台登录，或刷新页面自动同步凭据。
-                    </div>
-                `;
-                return;
+                taskError = '后台管理权限未验证，请登录后台后刷新页面。';
+            } else if (err.status === 404) {
+                taskError = '后端接口不存在 (404)，请先部署最新后端。';
+            } else {
+                taskError = '读取订单失败：' + err.message;
             }
-            if (err.status === 404) {
-                assistantElements.taskList.innerHTML = `
-                    <div style="color:#ef4444;text-align:center;padding:12px 0;">
-                        后端尚未部署最新代码 (接口 404)。请先执行 wrangler deploy。
-                    </div>
-                `;
-                return;
-            }
-            assistantElements.taskList.innerHTML = `
-                <div style="color:#ef4444;text-align:center;padding:12px 0;">
-                    拉取待支付任务失败: ${err.message || '网络异常'}
-                </div>
-            `;
-            return;
+        } finally {
+            tasksLoading = false;
+            updateUIState();
         }
-        updateUIState();
     }
 
     function renderTaskList() {
@@ -587,6 +606,13 @@
             assistantElements.badge.textContent = String(count);
         } else {
             assistantElements.badge.style.display = 'none';
+        }
+
+        if (tasksLoading || taskError) {
+            assistantElements.taskList.textContent = taskError || '正在读取待付订单（不会自动建单）…';
+            assistantElements.payAllBtn.disabled = true;
+            assistantElements.payAllBtn.textContent = '暂不可付款';
+            return;
         }
 
         if (!count) {
@@ -603,11 +629,11 @@
             return `
                 <div class="ldc-asst-task-item">
                     <div>
-                        <div class="ldc-asst-task-user">${task.displayName || '用户'} (UID: ${task.currentProviderUserId || '-'})</div>
-                        <div class="ldc-asst-task-sub">${task.rcredits || 0} rcredit · 单号 ${task.orderNo || task.redemptionId}</div>
+                        <div class="ldc-asst-task-user">${escapeHtml(task.displayName || '用户')} (UID: ${escapeHtml(task.currentProviderUserId || '-')})</div>
+                        <div class="ldc-asst-task-sub">${escapeHtml(task.rcredits || 0)} rcredit · ${escapeHtml(task.paymentState)} · 单号 ${escapeHtml(task.orderNo || task.redemptionId)}</div>
                     </div>
                     <div style="text-align:right;">
-                        <div class="ldc-asst-task-amt">${task.amountLdc} LDC</div>
+                        <div class="ldc-asst-task-amt">${escapeHtml(task.amountLdc)} LDC</div>
                     </div>
                 </div>
             `;
@@ -625,7 +651,7 @@
     }
 
     async function startBatchPayment() {
-        if (isProcessing) return;
+        if (isProcessing || tasksLoading || taskError) return;
         const payKey = getPayKey();
         if (!/^\d{6}$/.test(payKey)) {
             alert('请先配置 6 位 Linux.do 支付安全码。');
@@ -640,8 +666,8 @@
             return;
         }
 
-        let totalLdc = 0;
-        pendingTasks.forEach((t) => totalLdc += parseFloat(t.amountLdc || '0'));
+        const selectedTasks = pendingTasks.map((task) => ({ ...task }));
+        const totalLdc = selectedTasks.reduce((total, task) => total + amountMilli(task.amountLdc), 0) / 1000;
 
         if (!window.confirm(`确认向当前 ${pendingTasks.length} 笔订单自动付款，共计支付 ${totalLdc.toFixed(2)} LDC？\n\n付款将由当前 Linux.do 账号 (${cachedLinuxDoUser.username}) 执行。`)) {
             return;
@@ -655,17 +681,18 @@
         let successCount = 0;
         let failCount = 0;
 
-        for (let i = 0; i < pendingTasks.length; i++) {
-            const task = pendingTasks[i];
-            log(`[${i + 1}/${pendingTasks.length}] 处理兑换单 ${task.redemptionId} (${task.amountLdc} LDC)...`);
+        for (let index = 0; index < selectedTasks.length; index++) {
+            const task = selectedTasks[index];
+            log(`[${index + 1}/${selectedTasks.length}] 处理兑换单 ${task.redemptionId} (${task.amountLdc} LDC)...`);
 
             try {
                 await executeSinglePayment(task, payKey);
                 successCount++;
-                log(`[${i + 1}/${pendingTasks.length}] ✅ 成功完成发款并由系统确认！`);
+                log(`[${index + 1}/${selectedTasks.length}] ✅ 后端已确认到账`);
             } catch (err) {
                 failCount++;
-                log(`[${i + 1}/${pendingTasks.length}] ❌ 失败: ${err.message}`);
+                log(`已暂停：${err.message}。请先核对原单，勿重复支付。`);
+                break;
             }
         }
 
@@ -676,10 +703,18 @@
         alert(`批量发款完成！\n成功: ${successCount} 笔\n失败: ${failCount} 笔`);
     }
 
-    async function executeSinglePayment(task, payKey, isRetry = false) {
-        if (!task.taskToken) {
-            throw new Error('订单缺少服务端签名任务 Token (防越权拦截)');
+    async function executeSinglePayment(task, payKey) {
+        await fetchLinuxDoUser();
+        if (!cachedLinuxDoUser || String(cachedLinuxDoUser.id) !== getExpectedAdminUid()) {
+            throw new Error('付款账号已失效或变化');
         }
+        const batch = await apiRequest('POST', '/admin/redemptions/auto-pay-batch', {
+            redemptionIds: [task.redemptionId],
+        });
+        const fresh = batch.tasks?.find((entry) => entry.redemptionId === task.redemptionId);
+        if (!fresh?.taskToken) throw new Error(batch.errors?.[0]?.message || '后端未授权付款，请刷新订单状态');
+        if (amountMilli(fresh.amountLdc) !== amountMilli(task.amountLdc)) throw new Error('金额已变化，请重新确认');
+        task = { ...task, ...fresh };
 
         log('  → [安全核查 1/4] 服务端任务 Token 校验...');
         const claim = await apiRequest('POST', '/merchant-auto-pay/claim', {
@@ -687,6 +722,10 @@
         });
         if (!claim || !claim.ok) {
             throw new Error('服务端签名校验未通过');
+        }
+        if (String(claim.payerUserId) !== String(cachedLinuxDoUser.id)
+            || amountMilli(claim.expectedAmount) !== amountMilli(task.amountLdc)) {
+            throw new Error('任务付款人或金额不匹配');
         }
 
         log(`  → [安全核查 2/4] 向 Linux.do 官方核验订单状态与金额 (单号 ${claim.orderNo})...`);
@@ -705,33 +744,27 @@
             throw new Error('Linux.do 订单查询返回格式无效');
         }
         const officialOrder = orderJson && orderJson.data && orderJson.data.order;
-        if (!officialOrder) {
+        if (orderJson.error_msg || !officialOrder) {
             throw new Error('未在 Linux.do 查到该订单');
         }
 
         if (officialOrder.status !== 'pending') {
-            if (!isRetry && (officialOrder.status === 'expired' || officialOrder.status === 'timeout')) {
-                log(`  ⚠️ Linux.do 订单已超时失效 (${officialOrder.status})，正在自动换发新支付链接...`);
-                const reissued = await apiRequest('POST', `/admin/redemptions/${encodeURIComponent(task.redemptionId)}/reissue`);
-                if (reissued && reissued.redemption && reissued.redemption.latestPaymentUrl) {
-                    log('  → 新付款单号已生成，正在重新核验并付款...');
-                    const batch = await apiRequest('POST', '/admin/redemptions/auto-pay-batch', {
-                        redemptionIds: [task.redemptionId],
-                    });
-                    if (batch && batch.tasks && batch.tasks.length > 0) {
-                        return await executeSinglePayment(batch.tasks[0], payKey, true);
-                    }
-                }
-            }
             throw new Error(`Linux.do 订单状态不是 pending (当前为: ${officialOrder.status})，拒绝重复付款`);
+        }
+        const expiresAt = Date.parse(officialOrder.expires_at);
+        if (!Number.isFinite(expiresAt)) throw new Error('官方付款页未返回有效的链接到期时间；支付结果需查单核实');
+        if (expiresAt <= Date.now()) throw new Error('付款链接已过期；兑换仍保留，需用创建方凭据查单，不能仅凭链接过期重付');
+        if (!claim.payeeUserId || !claim.merchantPid || !claim.merchantOrderNo
+            || String(officialOrder.payee_user_id) !== String(claim.payeeUserId)
+            || String(officialOrder.client_id) !== String(claim.merchantPid)
+            || String(officialOrder.merchant_order_no) !== String(claim.merchantOrderNo)) {
+            throw new Error('收款人、商户或业务订单号不一致，已拦截');
         }
         if (String(officialOrder.payer_user_id) !== String(cachedLinuxDoUser.id)) {
             throw new Error(`付款人 UID 不匹配 (预期 ${cachedLinuxDoUser.id}, 订单为 ${officialOrder.payer_user_id})`);
         }
-        const officialAmount = parseFloat(officialOrder.amount || '0');
-        const expectedAmount = parseFloat(claim.expectedAmount || '0');
-        if (Math.abs(officialAmount - expectedAmount) > 0.001) {
-            throw new Error(`订单金额与系统记录不一致！(官方 ${officialAmount} LDC, 系统 ${expectedAmount} LDC)`);
+        if (amountMilli(officialOrder.amount) !== amountMilli(claim.expectedAmount)) {
+            throw new Error('订单金额与系统记录不一致');
         }
 
         log('  → [执行 3/4] 安全核查全部通过，向 Linux.do 提交支付...');
@@ -756,15 +789,18 @@
         } catch {
             throw new Error('支付返回非 JSON 格式');
         }
-        if (payJson && payJson.error_msg) {
-            throw new Error(`Linux.do 支付被拒绝: ${payJson.error_msg}`);
+        if (!payJson || payJson.error_msg !== '') {
+            throw new Error('Linux.do 未明确确认支付，请核对原单');
         }
 
         log('  → [确认 4/4] 支付提交成功，上报系统确认入账...');
-        await apiRequest('POST', '/merchant-auto-pay/confirm', {
+        const confirmation = await apiRequest('POST', '/merchant-auto-pay/confirm', {
             taskToken: task.taskToken,
             paid: true,
         });
+        if (confirmation.redemption?.status !== 'paid') {
+            throw new Error('付款已提交，但尚未确认到账');
+        }
     }
 
 })();
