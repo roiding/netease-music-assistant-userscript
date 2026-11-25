@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 自动付款助手 (网易云音乐互助管理)
 // @namespace    https://roiding.dpdns.org/
-// @version      1.0.4
+// @version      1.0.5
 // @description  网易云互助管理员独立脚本：后台同步管理凭据，Credit 页面同源核验登录态、管理本地支付安全码并核验待付订单后付款。
 // @author       Netease Music Helper
 // @match        https://credit.linux.do/*
@@ -429,7 +429,7 @@
         modal.id = 'ldc-pay-assistant-modal';
         modal.innerHTML = `
             <div class="ldc-asst-header">
-                <h3>💳 网易云兑换自动发款助手 v1.0.4</h3>
+                <h3>💳 网易云兑换自动发款助手 v1.0.5</h3>
                 <button class="ldc-asst-close" id="ldc-asst-close-btn">&times;</button>
             </div>
             <div class="ldc-asst-body">
@@ -504,7 +504,7 @@
             promptConfigurePayKey();
         };
         document.getElementById('ldc-asst-refresh-tasks-btn').onclick = () => {
-            fetchPendingTasks();
+            refreshBlockedPayments();
         };
         document.getElementById('ldc-asst-open-target-btn').onclick = () => {
             if (isAdminPage) {
@@ -637,6 +637,23 @@
         }
     }
 
+    async function refreshBlockedPayments() {
+        if (isProcessing || tasksLoading) return;
+        isProcessing = true;
+        updateUIState();
+        try {
+            for (const task of pendingTasks.filter((entry) => entry.autoPayBlocked)) {
+                const result = await apiRequest('POST', `/admin/redemptions/${encodeURIComponent(task.redemptionId)}/refresh`, {});
+                if (result.redemption && !result.redemption.autoPayBlocked) unavailablePaymentOrders.delete(task.redemptionId);
+            }
+        } catch (error) {
+            log('系统复查未完成：' + error.message);
+        } finally {
+            isProcessing = false;
+            await fetchPendingTasks();
+        }
+    }
+
     function renderTaskList() {
         if (!assistantElements) return;
         const count = pendingTasks.length;
@@ -672,7 +689,7 @@
                 <div class="ldc-asst-task-item">
                     <div>
                         <div class="ldc-asst-task-user">${escapeHtml(task.displayName || '用户')} (UID: ${escapeHtml(task.currentProviderUserId || '-')})</div>
-                        <div class="ldc-asst-task-sub">${escapeHtml(task.rcredits || 0)} rcredit · ${task.autoPayBlocked ? '链接不可用，已移出批付，请在管理后台核实原单' : task.paymentState === 'pending' ? '未确认成功，链接需核验' : escapeHtml(task.paymentState)} · 单号 ${escapeHtml(task.orderNo || task.redemptionId)}</div>
+                        <div class="ldc-asst-task-sub">${escapeHtml(task.rcredits || 0)} rcredit · ${task.autoPayBlocked ? '链接不可用，等待系统查单；点刷新可复查' : task.paymentState === 'pending' ? '未确认成功，链接需核验' : escapeHtml(task.paymentState)} · 单号 ${escapeHtml(task.orderNo || task.redemptionId)}</div>
                     </div>
                     <div style="text-align:right;">
                         <div class="ldc-asst-task-amt">${escapeHtml(task.amountLdc)} LDC</div>
@@ -718,7 +735,7 @@
 
         const selectedTasks = pendingTasks.filter((task) => !task.autoPayBlocked).map((task) => ({ ...task }));
         if (!selectedTasks.length) {
-            alert('付款链接已停用。请在管理后台核对原单，不能反复批付或仅凭 404 重建。');
+            alert('付款链接已停用。点击订单刷新可由系统复查；当前网关结果不足以允许重付，无需人工确认。');
             return;
         }
         const totalLdc = selectedTasks.reduce((total, task) => total + amountMilli(task.amountLdc), 0) / 1000;
@@ -759,7 +776,7 @@
 
     async function executeSinglePayment(task, payKey) {
         if (!isCreditPage) throw new Error('付款只允许在 credit.linux.do 页面执行');
-        if (task.autoPayBlocked) throw new Error('该付款链接已停用，请在管理后台核实原单');
+        if (task.autoPayBlocked) throw new Error('该付款链接已停用，等待系统复查结果');
         await fetchLinuxDoUser();
         if (!cachedLinuxDoUser || String(cachedLinuxDoUser.id) !== getExpectedAdminUid()) {
             throw new Error(loginState.message || '付款账号已失效或变化');
@@ -871,7 +888,7 @@
             log('  → 创建方查单确认原单已付，未再次提交付款');
             return;
         }
-        throw new Error('旧付款链接已停用并移出批付；status=0 不是链接可用证明。请在管理后台核对原单，确认已关闭且未付款后才能重新生成');
+        throw new Error('旧付款链接已停用并移出批付；系统已复查，网关尚未提供可安全重付的明确结果。无需人工确认，点击订单刷新可再次查单');
     }
 
 })();
