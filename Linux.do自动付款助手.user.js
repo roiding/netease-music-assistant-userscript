@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 自动付款助手 (网易云音乐互助管理)
 // @namespace    https://roiding.dpdns.org/
-// @version      1.0.6
+// @version      1.0.7
 // @description  网易云互助管理员独立脚本：后台同步管理凭据，Credit 页面同源核验登录态、管理本地支付安全码并核验待付订单后付款。
 // @author       Netease Music Helper
 // @match        https://credit.linux.do/*
@@ -141,7 +141,8 @@
         try {
             const response = await fetch(target.href, {
                 method, credentials: 'include', mode: 'same-origin', cache: 'no-store', redirect: 'error',
-                headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest',
+                    ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
                 ...(body === undefined ? {} : { body: JSON.stringify(body) }),
                 signal: controller.signal,
             });
@@ -153,6 +154,22 @@
         } finally {
             clearTimeout(timer);
         }
+    }
+
+    function paymentHttpError(response) {
+        let data = null;
+        try { data = JSON.parse(response.responseText); } catch {}
+        const message = typeof data?.error_msg === 'string' ? data.error_msg : '';
+        const prefix = `支付接口返回错误: HTTP ${response.status}`;
+        if (response.status === 403 && /csrf/i.test(message)) {
+            return `${prefix}（CSRF 校验失败，请确认当前页面运行助手 v1.0.7 或更新版本）；未自动重试，请先查原单`;
+        }
+        if (response.status === 403 && /^\s*(?:<!doctype\s+html|<html)/i.test(response.responseText || '')) {
+            return `${prefix}（官网返回验证页面，请在 Credit 官网完成验证后刷新）；未自动重试，请先查原单`;
+        }
+        if (response.status === 401) return `${prefix}（登录会话失效，请重新登录 Credit）；未自动重试，请先查原单`;
+        if (response.status === 403) return `${prefix}（官网拒绝请求，可能涉及权限或风控，不能据此认定未支付）；未自动重试，请先查原单`;
+        return `${prefix}；付款结果未确认，未自动重试，请先查原单`;
     }
 
     const isAdminPage = location.hostname === 'roiding.dpdns.org' || location.hostname === 'netease.ran-ding.gq';
@@ -429,7 +446,7 @@
         modal.id = 'ldc-pay-assistant-modal';
         modal.innerHTML = `
             <div class="ldc-asst-header">
-                <h3>💳 兑换与红包自动发款助手 v1.0.6</h3>
+                <h3>💳 兑换与红包自动发款助手 v1.0.7</h3>
                 <button class="ldc-asst-close" id="ldc-asst-close-btn">&times;</button>
             </div>
             <div class="ldc-asst-body">
@@ -758,7 +775,7 @@
         isProcessing = true;
         assistantElements.payAllBtn.disabled = true;
         assistantElements.payAllBtn.textContent = '正在自动处理中…';
-        log(`=== 开始批量付款流程，共 ${selectedTasks.length} 笔 ===`);
+        log(`=== 开始批量付款流程，共 ${selectedTasks.length} 笔（助手 v1.0.7）===`);
 
         let successCount = 0;
         let failCount = 0;
@@ -861,7 +878,7 @@
             pay_key: payKey,
         });
         if (payRes.status !== 200) {
-            throw new Error(`支付接口返回错误: HTTP ${payRes.status}`);
+            throw new Error(paymentHttpError(payRes));
         }
         let payJson;
         try {

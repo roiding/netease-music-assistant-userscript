@@ -103,7 +103,7 @@ Features:
 - Performs zero-trust double-checking against Linux.do's official order API (`status === pending`, payee, amount, payer UID) before submitting payment.
 - Batch auto-pays verified orders in one click and reports confirmation back to the Worker backend.
 
-Version 1.0.6 checks Credit identity, queries payment details and submits payment
+Version 1.0.7 checks Credit identity, queries payment details and submits payment
 with native same-origin `fetch` and `credentials: include` on credit.linux.do.
 It no longer uses extension requests for Credit cookies. The management page
 syncs administrator credentials and lists orders, but does not infer Credit
@@ -112,6 +112,16 @@ use **前往 Credit 核验并付款** and open the assistant there. HTTP 401/403
 HTML challenge pages, invalid responses and network failures have separate
 diagnostics and all block payment; no payment request is automatically retried.
 Cookies are neither copied nor persisted by the assistant.
+
+Version 1.0.7 also sends `X-Requested-With: XMLHttpRequest` to the allowlisted
+same-origin Credit endpoints, matching the official client and the successful
+manual-payment HAR. Credit's CSRF middleware rejects mutation requests without
+that header with HTTP 403 even when login and GET order queries work. HTTP 403
+diagnostics distinguish explicit CSRF rejection, HTML verification pages and
+other permission/risk errors without dumping response bodies or secrets. A
+payment error never triggers automatic payment retry or replacement. The
+assistant title and batch-start log both display 1.0.7; update the installed
+Tampermonkey copy and reload the existing Credit tab before using it.
 
 Unavailable checkout links (404, expired or non-pending) are reported to the
 backend with the signed task, without posting a payment. The backend performs
